@@ -43,8 +43,9 @@ network:
 dns:
   # Parent zone under which the site zone is created:
   #   site-london.<parent>
-  parent: marrison.internal
-  view:   marrison-b1se-lab1
+  parent:      marrison.internal
+  view:        marrison-b1se-lab1
+  create_zone: true    # create the zone if it does not already exist
 
 hosts:
   # Each host is provisioned in the named subnet (base+N IP, DNS A+PTR)

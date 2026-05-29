@@ -103,8 +103,9 @@ network:
       dhcp:    false
 
 dns:
-  parent: internal.example.com # optional — overrides INI default
-  view:   default              # optional — overrides INI default
+  parent:      internal.example.com # optional — overrides INI default
+  view:        default              # optional — overrides INI default
+  create_zone: false                # create zone if absent (default: false)
 
 hosts:                         # optional — defaults to single gw01
   - hostname: gw01
@@ -166,6 +167,8 @@ provision_site.py [-h] [-t FILE]
 | `--dns-view` | DNS view name (overrides template/config) |
 | `--ip-space` | IP space name (overrides template/config) |
 | `--dry-run` | Preview all steps without making changes |
+| `--create-zone` | Create the site DNS zone if it does not already exist |
+| `--no-create-zone` | Abort if the site DNS zone does not exist (safe default) |
 | `-c`, `--config` | INI config file path (default: `provision_site.ini`) |
 | `-d`, `--debug` | Enable DEBUG logging (shows all API calls) |
 | `-v`, `--verbose` | Enable INFO logging |
@@ -276,6 +279,7 @@ claude_mcp_provision_site/
 
 | Version | Changes |
 |---------|---------|
+| 1.2.0 | `dns.create_zone` option (YAML + CLI); safe default — abort if zone absent |
 | 1.1.0 | YAML template support; multiple hosts; per-subnet CIDR; extra tags |
 | 1.0.0 | Initial release — CLI-only, three-subnet plan, single gateway host |
 

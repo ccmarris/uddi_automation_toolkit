@@ -10,3 +10,7 @@ site:
   region:      APAC
   environment: production
   location:    "Sydney, AU"
+
+# dns.create_zone defaults to false when omitted — add it here to enable:
+# dns:
+#   create_zone: true

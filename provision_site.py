@@ -91,8 +91,9 @@
             dhcp:    true
 
       dns:
-        parent:  internal.example.com
-        view:    default
+        parent:      internal.example.com
+        view:        default
+        create_zone: true    # create zone if absent (default: false)
 
       hosts:
         - hostname: gw01
@@ -139,7 +140,7 @@
 
 ------------------------------------------------------------------------
 '''
-__version__ = '1.1.0'
+__version__ = '1.2.0'
 __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
@@ -214,6 +215,7 @@ class SiteConfig:
     owner: str
     subnet_size: int
     dry_run: bool
+    create_zone: bool = False
     extra_tags: dict = field(default_factory=dict)
     _subnet_plan: list[SubnetDef] = field(default_factory=list)
     _hosts: list[HostDef] = field(default_factory=list)
@@ -445,6 +447,14 @@ def template_to_site_config(
     # Extra tags from the YAML [tags] section (Owner already extracted above)
     extra_tags = {k: str(v) for k, v in tags_sec.items()}
 
+    # --- DNS zone creation option ---
+    # Precedence: CLI --create-zone/--no-create-zone > YAML dns.create_zone > False
+    cli_create_zone = getattr(cli_args, 'create_zone', None)
+    if cli_create_zone is not None:
+        create_zone = bool(cli_create_zone)
+    else:
+        create_zone = bool(dns_sec.get('create_zone', False))
+
     return SiteConfig(
         site=site.lower(),
         region=region,
@@ -456,6 +466,7 @@ def template_to_site_config(
         owner=owner,
         subnet_size=subnet_size,
         dry_run=getattr(cli_args, 'dry_run', False),
+        create_zone=create_zone,
         extra_tags=extra_tags,
         _subnet_plan=subnet_plan,
         _hosts=host_list,
@@ -863,7 +874,18 @@ class SiteProvisioner:
             self._zone_id = zone['id']
             return zone
 
-        # Zone does not exist — create it
+        # Zone does not exist
+        if not self.cfg.create_zone:
+            logger.error(
+                'DNS zone "%s" does not exist in view "%s".  '
+                'Set dns.create_zone: true in the YAML template or pass '
+                '--create-zone on the CLI to create it automatically.',
+                fqdn, self.cfg.dns_view,
+            )
+            sys.exit(1)
+
+        # create_zone is True — create the zone
+        logger.info('  Zone not found — creating: %s  view=%s', fqdn, self.cfg.dns_view)
         body = {
             'fqdn':         fqdn,
             'view':         self._view_id,
@@ -1216,6 +1238,26 @@ def parseargs() -> argparse.Namespace:
         action='store_true',
         default=False,
         help='Preview all steps without making any changes',
+    )
+
+    # DNS zone creation control
+    # Default is None so template_to_site_config() knows no CLI flag was given
+    # and can fall back to the YAML dns.create_zone value.
+    zone_grp = parser.add_mutually_exclusive_group()
+    zone_grp.add_argument(
+        '--create-zone',
+        dest='create_zone',
+        action='store_const',
+        const=True,
+        default=None,
+        help='Create the site DNS zone if it does not already exist',
+    )
+    zone_grp.add_argument(
+        '--no-create-zone',
+        dest='create_zone',
+        action='store_const',
+        const=False,
+        help='Abort if the site DNS zone does not already exist (safe default)',
     )
     parser.add_argument(
         '-c', '--config',
