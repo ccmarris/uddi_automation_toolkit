@@ -256,7 +256,7 @@ All destructive steps support `--dry-run`. An interactive confirmation prompt is
 ### Usage
 
 ```
-decommission_site.py [-h] -s NAME
+decommission_site.py [-h] [-t FILE] [-s NAME]
                      [--final-status {decommissioned,available}]
                      [--keep-zone]
                      [--dns-parent ZONE] [--dns-view VIEW]
@@ -267,7 +267,8 @@ decommission_site.py [-h] -s NAME
 
 | Argument | Description |
 |----------|-------------|
-| `-s`, `--site` | Short site name to decommission (required) |
+| `-t`, `--template` | Path to YAML site template (same file used to provision) |
+| `-s`, `--site` | Short site name to decommission (or via `site.name` in template) |
 | `--final-status` | Block status after teardown: `decommissioned` (default) or `available` |
 | `--keep-zone` | Leave the site DNS zone intact |
 | `--dns-parent` | Parent DNS zone (overrides INI default) |
@@ -367,6 +368,7 @@ claude_mcp_provision_site/
 
 | Version | Changes |
 |---------|---------|
+| 1.1.0 | YAML template support — same template file works for provision and decommission |
 | 1.0.0 | Initial release — full site teardown: hosts, DNS zone, subnets, block reset |
 
 ### provision_site.py

@@ -29,7 +29,7 @@
     --force skips the interactive confirmation prompt.
 
  Usage:
-    decommission_site.py [-h] -s SITE
+    decommission_site.py [-h] [-t FILE] [-s SITE]
                          [--final-status {available,decommissioned}]
                          [--keep-zone] [--dns-parent ZONE]
                          [--dns-view VIEW] [--ip-space SPACE]
@@ -37,20 +37,26 @@
                          [-c CONFIG] [-d | -v] [-V]
 
  Examples:
-    # Dry-run — preview everything that would be removed
+    # Dry-run using the same YAML template used to provision
+    decommission_site.py -t templates/site-london.yaml --dry-run -v
+
+    # Full decommission from template (prompts for confirmation)
+    decommission_site.py -t templates/site-london.yaml -v
+
+    # Template + CLI override (CLI wins)
+    decommission_site.py -t templates/site-london.yaml --dns-view other -v
+
+    # CLI-only (no template)
     decommission_site.py -s london --dry-run -v
 
-    # Full decommission with confirmation prompt
-    decommission_site.py -s london -v
-
     # Skip confirmation (for pipelines / batch runs)
-    decommission_site.py -s london --force -v
+    decommission_site.py -t templates/site-london.yaml --force -v
 
     # Reset block to available instead of decommissioned
-    decommission_site.py -s london --final-status available -v
+    decommission_site.py -t templates/site-london.yaml --final-status available -v
 
     # Keep the DNS zone (hosts only removed from IPAM, not DNS)
-    decommission_site.py -s london --keep-zone -v
+    decommission_site.py -t templates/site-london.yaml --keep-zone -v
 
  Configuration:
     Shares the same INI file as provision_site.py (default:
@@ -98,7 +104,7 @@
 
 ------------------------------------------------------------------------
 '''
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
@@ -112,6 +118,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import requests
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +172,47 @@ class DecommissionResult:
     block_updated: bool = False
     final_status: str = ''
     dry_run: bool = False
+
+
+# ---------------------------------------------------------------------------
+# YAML template loader
+# ---------------------------------------------------------------------------
+
+def load_yaml_template(path: str) -> dict:
+    '''
+    Load and parse a YAML site template file.
+
+    Only the site identity fields are used during decommission
+    (site.name, network.ip_space, dns.parent, dns.view).  The subnet
+    plan, host list, and tag sections are intentionally ignored — the
+    live resources are discovered directly from the API.
+
+    Args:
+        path: Filesystem path to the YAML template
+
+    Returns:
+        Parsed template as a plain dict
+
+    Raises:
+        SystemExit if the file cannot be opened or is not valid YAML
+    '''
+    logger.info('Loading YAML template: %s', path)
+    try:
+        with open(path, 'r') as fh:
+            data = yaml.safe_load(fh)
+    except FileNotFoundError:
+        logger.error('YAML template not found: %s', path)
+        sys.exit(1)
+    except yaml.YAMLError as exc:
+        logger.error('Invalid YAML in %s: %s', path, exc)
+        sys.exit(1)
+
+    if not isinstance(data, dict):
+        logger.error('YAML template must be a mapping (dict) at the top level: %s', path)
+        sys.exit(1)
+
+    logger.debug('Template loaded: %s', data)
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -873,10 +921,18 @@ def parseargs() -> argparse.Namespace:
         version=f'%(prog)s {__version__}',
     )
 
-    # Site name — required
+    # YAML template (same format as provision_site.py)
+    parser.add_argument(
+        '-t', '--template',
+        default=None,
+        metavar='FILE',
+        help='Path to a YAML site definition template (same file used to provision)',
+    )
+
+    # Site name — optional when a template is provided
     parser.add_argument(
         '-s', '--site',
-        required=True,
+        default=None,
         metavar='NAME',
         help='Short site name to decommission (must match the Site tag on the block)',
     )
@@ -977,25 +1033,39 @@ def main() -> None:
     cfg_file = read_config(args.config)
     ini = dict(cfg_file['DEFAULTS']) if cfg_file.has_section('DEFAULTS') else {}
 
-    # Resolve each value: CLI > INI > error
-    def resolve(cli_val: Optional[str], ini_key: str, label: str) -> str:
+    # Load YAML template (empty dict if none supplied)
+    template: dict = {}
+    if args.template:
+        template = load_yaml_template(args.template)
+
+    # Extract template sections (all optional keys)
+    site_sec = template.get('site', {}) or {}
+    net_sec  = template.get('network', {}) or {}
+    dns_sec  = template.get('dns', {}) or {}
+
+    # Resolve each value: CLI > YAML template > INI > error
+    def resolve(cli_val: Optional[str], yaml_val, ini_key: str, label: str) -> str:
         if cli_val:
             return cli_val
+        if yaml_val:
+            return str(yaml_val)
         v = ini.get(ini_key, '')
         if not v:
             logger.error(
-                'Required value "%s" not supplied via CLI or INI [DEFAULTS].%s',
+                'Required value "%s" not supplied via CLI flag, YAML template, '
+                'or INI [DEFAULTS].%s',
                 label, ini_key,
             )
             sys.exit(1)
         return v
 
-    ip_space   = resolve(args.ip_space,   'ip_space',   '--ip-space')
-    dns_parent = resolve(args.dns_parent, 'dns_parent', '--dns-parent')
-    dns_view   = resolve(args.dns_view,   'dns_view',   '--dns-view')
+    site       = resolve(args.site,       site_sec.get('name'),    'site',       '--site / site.name')
+    ip_space   = resolve(args.ip_space,   net_sec.get('ip_space'), 'ip_space',   '--ip-space / network.ip_space')
+    dns_parent = resolve(args.dns_parent, dns_sec.get('parent'),   'dns_parent', '--dns-parent / dns.parent')
+    dns_view   = resolve(args.dns_view,   dns_sec.get('view'),     'dns_view',   '--dns-view / dns.view')
 
     cfg = DecommissionConfig(
-        site=args.site.lower(),
+        site=site.lower(),
         ip_space=ip_space,
         dns_parent=dns_parent,
         dns_view=dns_view,
@@ -1007,6 +1077,8 @@ def main() -> None:
 
     mode_label = '[DRY-RUN] ' if cfg.dry_run else ''
     print(f'\n{mode_label}Decommissioning site: {cfg.site}')
+    if args.template:
+        print(f'  Template: {args.template}')
 
     # Confirmation gate — skipped in dry-run mode and when --force is set
     if not cfg.dry_run and not cfg.force:
