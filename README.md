@@ -1,19 +1,27 @@
-# provision_site.py / decommission_site.py
+# Universal DDI Site Toolkit
 
-Tag-driven site provisioning **and decommissioning** for **Infoblox Universal DDI**.
+Tag-driven site provisioning, decommissioning, and template authoring
+for **Infoblox Universal DDI**.
 
-Automates the full lifecycle of bringing up a new network site from
-a single command, using metadata tags on address blocks to drive IP
-allocation — no hardcoded CIDRs required.
+| Tool | Purpose |
+|------|---------|
+| `provision_site.py` | Bring up a new network site end-to-end |
+| `decommission_site.py` | Tear down a previously provisioned site |
+| `site_template_builder.html` | Browser form that generates YAML templates |
 
-Site definitions can be provided as a **YAML template** for full
-customisation, or via CLI flags for quick one-liners.
+All three tools share the same YAML template format and INI configuration
+file — author a template once in the builder, then use it for both
+provisioning and decommissioning.
 
 ---
 
-## What it does
+## How it works
 
-Given a site name, region, and environment, the script:
+Site definitions are driven by a YAML template (or CLI flags for quick
+one-liners). Address blocks are discovered by metadata tags — no
+hardcoded CIDRs required.
+
+### Provisioning sequence
 
 | Step | Action |
 |------|--------|
@@ -25,7 +33,20 @@ Given a site name, region, and environment, the script:
 | 6 | **Creates** a forward DNS zone: `site-<name>.<dns_parent>` |
 | 7 | **Provisions** all hosts defined in the template (IPAM + DNS A/PTR) |
 
-All destructive steps support `--dry-run`.
+### Decommissioning sequence
+
+| Step | Action |
+|------|--------|
+| 1 | Resolves the configured IP space |
+| 2 | **Discovers** the site's address block (`Site=<name>`, `Status=allocated`) |
+| 3 | Resolves the DNS view |
+| 4 | **Enumerates** all subnets inside the block |
+| 5 | **Deletes** all IPAM host records in site subnets (removes DNS A/PTR automatically) |
+| 6 | **Deletes** the forward DNS authoritative zone (unless `--keep-zone`) |
+| 7 | **Deletes** all site subnets |
+| 8 | **Resets** the block — `Status=decommissioned`, `Site=unassigned`, clears `Location`/`Provisioned` |
+
+All destructive steps in both scripts support `--dry-run`.
 
 ---
 
@@ -35,6 +56,10 @@ All destructive steps support `--dry-run`.
 Python 3.8+
 pip install requests pyyaml
 ```
+
+The template builder (`site_template_builder.html`) is a single
+self-contained HTML file — open it directly in any modern browser.
+No server or additional dependencies required.
 
 ---
 
@@ -58,6 +83,9 @@ subnet_size = 24
 > **Security:** `provision_site.ini` is listed in `.gitignore` and will
 > never be committed. Keep your API key out of source control.
 
+Both `provision_site.py` and `decommission_site.py` read the same INI
+file (default: `provision_site.ini` in the current directory).
+
 ---
 
 ## Parameter precedence
@@ -74,7 +102,46 @@ This means you can:
 
 ---
 
+## site_template_builder.html
+
+A browser-based form for authoring YAML site templates without editing
+YAML by hand. Open the file directly — no web server needed.
+
+### Features
+
+- **Live YAML preview** with syntax highlighting, updated as you type
+- **Dynamic lists** — add and remove subnets, hosts, and extra tags
+- **Subnet-aware host form** — the subnet dropdown in the Hosts section
+  auto-populates from the names defined in the Subnets section above
+- **Download** the finished template as `site-<name>.yaml`
+- **Copy to clipboard** button in the preview panel
+- **CLI command hints** — the exact `provision_site.py` and
+  `decommission_site.py` commands (with the correct template path) are
+  shown at the bottom of the form and update in real time
+
+### Usage
+
+```bash
+open site_template_builder.html          # macOS
+xdg-open site_template_builder.html     # Linux
+start site_template_builder.html        # Windows
+```
+
+Fill in the form, download or copy the YAML, save it to the `templates/`
+directory, then run:
+
+```bash
+python3 provision_site.py    -t templates/site-<name>.yaml --dry-run -v
+python3 decommission_site.py -t templates/site-<name>.yaml --dry-run -v
+```
+
+---
+
 ## YAML template schema
+
+The same template file is accepted by both `provision_site.py` and
+`decommission_site.py`.  All keys are optional except `site.name`,
+`site.region`, and `site.environment`.
 
 ```yaml
 site:
@@ -141,17 +208,24 @@ Status lifecycle:
 
 ```
 available  →  allocated  →  decommissioned
+               (provision)    (decommission)
+
+decommissioned  →  available
+                   (--final-status available, ready to re-provision)
 ```
 
 ---
 
-## Usage
+## provision_site.py
+
+### Usage
 
 ```
 provision_site.py [-h] [-t FILE]
                   [-s NAME] [-r REGION] [-e ENV] [-l LOCATION]
                   [--subnet-size N] [--dns-parent ZONE]
                   [--dns-view VIEW] [--ip-space SPACE]
+                  [--create-zone | --no-create-zone]
                   [--dry-run] [-c FILE] [-d | -v] [-V]
 ```
 
@@ -166,17 +240,15 @@ provision_site.py [-h] [-t FILE]
 | `--dns-parent` | Parent DNS zone (overrides template/config) |
 | `--dns-view` | DNS view name (overrides template/config) |
 | `--ip-space` | IP space name (overrides template/config) |
-| `--dry-run` | Preview all steps without making changes |
 | `--create-zone` | Create the site DNS zone if it does not already exist |
 | `--no-create-zone` | Abort if the site DNS zone does not exist (safe default) |
+| `--dry-run` | Preview all steps without making changes |
 | `-c`, `--config` | INI config file path (default: `provision_site.ini`) |
 | `-d`, `--debug` | Enable DEBUG logging (shows all API calls) |
 | `-v`, `--verbose` | Enable INFO logging |
 | `-V`, `--version` | Show version and exit |
 
----
-
-## Examples
+### Examples
 
 ```bash
 # Dry-run with full YAML template
@@ -201,9 +273,7 @@ python3 provision_site.py -t templates/site-london.yaml --subnet-size 22
 python3 provision_site.py -t templates/site-london.yaml -c /etc/infoblox/provision_site.ini
 ```
 
----
-
-## Example output
+### Example output
 
 ```
 Provisioning site: london
@@ -220,38 +290,19 @@ Site Provisioning Summary
     10.20.2.0/24         london-server            id=ipam/subnet/...
     10.20.3.0/24         london-dmz               id=ipam/subnet/...
 
-  DNS zone      : site-london.marrison.internal  id=dns/auth_zone/...
+  DNS zone      : site-london.internal.example.com  id=dns/auth_zone/...
 
   Hosts:
-    gw01.site-london.marrison.internal            -> 10.20.0.1    id=ipam/host/...
-    dns01.site-london.marrison.internal           -> 10.20.2.1    id=ipam/host/...
-    mon01.site-london.marrison.internal           -> 10.20.0.2    id=ipam/host/...
+    gw01.site-london.internal.example.com         -> 10.20.0.1    id=ipam/host/...
+    dns01.site-london.internal.example.com        -> 10.20.2.1    id=ipam/host/...
+    mon01.site-london.internal.example.com        -> 10.20.0.2    id=ipam/host/...
 ============================================================
 Provisioning complete.
 ```
 
 ---
 
----
-
 ## decommission_site.py
-
-Companion script that performs the **full reverse** of `provision_site.py` — tearing down a site that was previously provisioned.
-
-### What it does
-
-| Step | Action |
-|------|--------|
-| 1 | Resolves the configured IP space |
-| 2 | **Discovers** the site's address block (`Site=<name>`, `Status=allocated`) |
-| 3 | Resolves the DNS view |
-| 4 | **Enumerates** all subnets inside the block |
-| 5 | **Deletes** all IPAM host records in site subnets (removes DNS A/PTR automatically) |
-| 6 | **Deletes** the forward DNS authoritative zone (unless `--keep-zone`) |
-| 7 | **Deletes** all site subnets |
-| 8 | **Resets** the block — `Status=decommissioned`, `Site=unassigned`, clears `Location`/`Provisioned` |
-
-All destructive steps support `--dry-run`. An interactive confirmation prompt is shown unless `--force` is given.
 
 ### Usage
 
@@ -279,24 +330,28 @@ decommission_site.py [-h] [-t FILE] [-s NAME]
 | `-c`, `--config` | INI config file path (default: `provision_site.ini`) |
 | `-d`, `--debug` | Enable DEBUG logging |
 | `-v`, `--verbose` | Enable INFO logging |
+| `-V`, `--version` | Show version and exit |
 
 ### Examples
 
 ```bash
 # Preview what would be removed (no changes made)
-python3 decommission_site.py -s london --dry-run -v
+python3 decommission_site.py -t templates/site-london.yaml --dry-run -v
 
-# Full decommission — prompts: "Type the site name to confirm"
-python3 decommission_site.py -s london -v
+# Full decommission from template — prompts: "Type the site name to confirm"
+python3 decommission_site.py -t templates/site-london.yaml -v
 
 # Non-interactive (CI/pipeline use)
-python3 decommission_site.py -s london --force -v
+python3 decommission_site.py -t templates/site-london.yaml --force -v
 
-# Reset block back to available (re-provision later)
-python3 decommission_site.py -s london --final-status available --force -v
+# Reset block back to available (ready to re-provision)
+python3 decommission_site.py -t templates/site-london.yaml --final-status available --force -v
 
 # Keep the DNS zone, only tear down IPAM resources
-python3 decommission_site.py -s london --keep-zone -v
+python3 decommission_site.py -t templates/site-london.yaml --keep-zone -v
+
+# CLI-only (no template)
+python3 decommission_site.py -s london --dry-run -v
 
 # Batch decommission all sites listed in a file
 while IFS= read -r site; do
@@ -304,24 +359,14 @@ while IFS= read -r site; do
 done < sites-to-retire.txt
 ```
 
-### Block status lifecycle
-
-```
-available  →  allocated  →  decommissioned
-               (provision)    (decommission)
-
-decommissioned  →  available
-                   (--final-status available, ready to re-provision)
-```
-
 ---
 
-## Extending the script
+## Extending the scripts
 
 ### Add more subnets
 
-Add entries to the `network.subnets` list in your YAML template — no
-code changes required.
+Add entries to the `network.subnets` list in your YAML template — or
+use the template builder form — no code changes required.
 
 ### Add more hosts
 
@@ -349,21 +394,26 @@ done
 
 ```
 claude_mcp_provision_site/
-├── provision_site.py          # Provisioning script
-├── decommission_site.py       # Decommissioning script
-├── provision_site.ini.example # Configuration template (shared by both scripts)
-├── README.md                  # This file
+├── provision_site.py           # Provisioning script
+├── decommission_site.py        # Decommissioning script
+├── site_template_builder.html  # Browser-based YAML template builder
+├── provision_site.ini.example  # Configuration template (shared by both scripts)
+├── README.md                   # This file
 └── templates/
-    ├── site-london.yaml       # Full featured example
-    └── site-minimal.yaml      # Minimal example (uses INI defaults)
+    ├── site-london.yaml        # Full featured example
+    └── site-minimal.yaml       # Minimal example (uses INI defaults)
 ```
 
 ---
 
 ## Changelog
 
+### site_template_builder.html
+
 | Version | Changes |
 |---------|---------|
+| 1.0.0 | Initial release — browser form with live YAML preview, download, and CLI hints |
+
 ### decommission_site.py
 
 | Version | Changes |
