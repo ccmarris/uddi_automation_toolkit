@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Site Template Builder — Infoblox Universal DDI</title>
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet">
+  <style>
+    /* ------------------------------------------------------------------ */
+    /* CSS custom properties — Infoblox brand tokens                       */
+    /* ------------------------------------------------------------------ */
+    :root {
+      --ibx-black:      #101820;
+      --ibx-green:      #00BD4D;
+      --ibx-white:      #FFFFFF;
+      --ibx-off-white:  #F0EFE9;
+      --ibx-teal:       #00E2EC;
+      --ibx-steel:      #D9E1E2;
+      --ibx-blue-gray:  #202D37;
+      --ibx-text-muted: #5A6470;
+      --ibx-gradient:   linear-gradient(to right, #FEDD00 0%, #00BD4D 35%, #00BD4D 65%, #00E2EC 100%);
+      --ibx-font:       'Lato', sans-serif;
+      --radius:         4px;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Reset & base                                                         */
+    /* ------------------------------------------------------------------ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--ibx-font);
+      background: var(--ibx-off-white);
+      color: var(--ibx-black);
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Brand bar                                                            */
+    /* ------------------------------------------------------------------ */
+    .brand-bar {
+      height: 4px;
+      background: var(--ibx-gradient);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Header                                                               */
+    /* ------------------------------------------------------------------ */
+    header {
+      background: var(--ibx-black);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .logo-diamond {
+      width: 28px;
+      height: 28px;
+      background: var(--ibx-green);
+      transform: rotate(45deg);
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      color: var(--ibx-white);
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    header h1 span {
+      color: var(--ibx-green);
+    }
+
+    header p {
+      color: var(--ibx-steel);
+      font-size: 12px;
+      font-weight: 300;
+      margin-left: auto;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Layout                                                               */
+    /* ------------------------------------------------------------------ */
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      gap: 0;
+      min-height: calc(100vh - 64px);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Form panel                                                           */
+    /* ------------------------------------------------------------------ */
+    .form-panel {
+      padding: 32px;
+      overflow-y: auto;
+      border-right: 1px solid var(--ibx-steel);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Preview panel                                                        */
+    /* ------------------------------------------------------------------ */
+    .preview-panel {
+      background: var(--ibx-black);
+      display: flex;
+      flex-direction: column;
+      position: sticky;
+      top: 0;
+      height: calc(100vh - 68px);  /* 4px brand bar + 64px header */
+    }
+
+    .preview-header {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--ibx-blue-gray);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .preview-header h2 {
+      color: var(--ibx-steel);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .preview-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-icon {
+      background: var(--ibx-blue-gray);
+      border: 1px solid #2e3d4a;
+      color: var(--ibx-steel);
+      font-family: var(--ibx-font);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 5px 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .btn-icon:hover {
+      background: var(--ibx-green);
+      color: var(--ibx-white);
+      border-color: var(--ibx-green);
+    }
+
+    .btn-icon.copied {
+      background: var(--ibx-green);
+      color: var(--ibx-white);
+      border-color: var(--ibx-green);
+    }
+
+    #yaml-output {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 12.5px;
+      line-height: 1.7;
+      color: #c9d1d9;
+      white-space: pre;
+      tab-size: 2;
+    }
+
+    /* Syntax colouring */
+    .yaml-key    { color: #00BD4D; }
+    .yaml-string { color: #a8d8a8; }
+    .yaml-bool   { color: var(--ibx-teal); }
+    .yaml-number { color: #f9c74f; }
+    .yaml-comment { color: var(--ibx-text-muted); font-style: italic; }
+    .yaml-dash   { color: var(--ibx-steel); }
+
+    /* ------------------------------------------------------------------ */
+    /* Section cards                                                        */
+    /* ------------------------------------------------------------------ */
+    .section-card {
+      background: var(--ibx-white);
+      border: 1px solid var(--ibx-steel);
+      border-radius: var(--radius);
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+
+    .section-card-header {
+      background: var(--ibx-off-white);
+      border-bottom: 2px solid var(--ibx-green);
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .section-card-header h2 {
+      font-size: 13px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ibx-black);
+    }
+
+    .section-card-header .section-tag {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--ibx-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-left: auto;
+      background: var(--ibx-steel);
+      padding: 2px 7px;
+      border-radius: 2px;
+    }
+
+    .section-card-body {
+      padding: 20px 16px;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Form elements                                                        */
+    /* ------------------------------------------------------------------ */
+    .field-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .field-row.full { grid-template-columns: 1fr; }
+    .field-row.thirds { grid-template-columns: 1fr 1fr 1fr; }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ibx-text-muted);
+    }
+
+    label .required {
+      color: var(--ibx-green);
+      margin-left: 2px;
+    }
+
+    label .hint {
+      font-weight: 400;
+      text-transform: none;
+      letter-spacing: 0;
+      color: #9aa3ad;
+      font-size: 10px;
+      margin-left: 6px;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    select {
+      background: var(--ibx-white);
+      border: 1px solid var(--ibx-steel);
+      border-radius: var(--radius);
+      color: var(--ibx-black);
+      font-family: var(--ibx-font);
+      font-size: 13px;
+      padding: 7px 10px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      width: 100%;
+    }
+
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    select:focus {
+      outline: none;
+      border-color: var(--ibx-green);
+      box-shadow: 0 0 0 2px rgba(0, 189, 77, 0.15);
+    }
+
+    input[type="text"]::placeholder { color: #b0b8c0; }
+
+    /* Toggle switch */
+    .toggle-field {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+    }
+
+    .toggle-field label {
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 13px;
+      font-weight: 400;
+      color: var(--ibx-black);
+      cursor: pointer;
+    }
+
+    .toggle {
+      position: relative;
+      width: 38px;
+      height: 20px;
+      flex-shrink: 0;
+    }
+
+    .toggle input { display: none; }
+
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: var(--ibx-steel);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-thumb {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 14px;
+      height: 14px;
+      background: var(--ibx-white);
+      border-radius: 50%;
+      transition: transform 0.2s;
+      pointer-events: none;
+    }
+
+    .toggle input:checked ~ .toggle-track { background: var(--ibx-green); }
+    .toggle input:checked ~ .toggle-thumb { transform: translateX(18px); }
+
+    /* ------------------------------------------------------------------ */
+    /* Dynamic list items (subnets / hosts / tags)                         */
+    /* ------------------------------------------------------------------ */
+    .list-item {
+      background: var(--ibx-off-white);
+      border: 1px solid var(--ibx-steel);
+      border-left: 3px solid var(--ibx-green);
+      border-radius: var(--radius);
+      padding: 12px;
+      margin-bottom: 10px;
+      position: relative;
+    }
+
+    .list-item-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .list-item-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ibx-text-muted);
+    }
+
+    .btn-remove {
+      background: none;
+      border: 1px solid var(--ibx-steel);
+      border-radius: var(--radius);
+      color: var(--ibx-text-muted);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .btn-remove:hover {
+      border-color: #e05252;
+      color: #e05252;
+    }
+
+    .btn-add {
+      background: transparent;
+      border: 1px dashed var(--ibx-green);
+      border-radius: var(--radius);
+      color: var(--ibx-green);
+      font-family: var(--ibx-font);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 8px 16px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      width: 100%;
+      margin-top: 4px;
+      transition: background 0.15s;
+    }
+
+    .btn-add:hover {
+      background: rgba(0, 189, 77, 0.08);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Primary action buttons                                               */
+    /* ------------------------------------------------------------------ */
+    .actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .btn-primary {
+      background: var(--ibx-green);
+      border: none;
+      border-radius: var(--radius);
+      color: var(--ibx-white);
+      font-family: var(--ibx-font);
+      font-size: 13px;
+      font-weight: 700;
+      padding: 10px 24px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      transition: background 0.15s;
+    }
+
+    .btn-primary:hover { background: #009e40; }
+
+    .btn-secondary {
+      background: transparent;
+      border: 2px solid var(--ibx-green);
+      border-radius: var(--radius);
+      color: var(--ibx-green);
+      font-family: var(--ibx-font);
+      font-size: 13px;
+      font-weight: 700;
+      padding: 8px 24px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .btn-secondary:hover {
+      background: var(--ibx-green);
+      color: var(--ibx-white);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* CLI preview strip                                                    */
+    /* ------------------------------------------------------------------ */
+    .cli-strip {
+      margin-top: 20px;
+      background: var(--ibx-blue-gray);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      border-left: 3px solid var(--ibx-teal);
+    }
+
+    .cli-strip-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--ibx-teal);
+      margin-bottom: 6px;
+    }
+
+    .cli-strip code {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 12px;
+      color: var(--ibx-white);
+      word-break: break-all;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Toast notification                                                   */
+    /* ------------------------------------------------------------------ */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--ibx-green);
+      color: var(--ibx-white);
+      font-size: 13px;
+      font-weight: 700;
+      padding: 12px 20px;
+      border-radius: var(--radius);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Scrollbar styling                                                    */
+    /* ------------------------------------------------------------------ */
+    #yaml-output::-webkit-scrollbar { width: 6px; }
+    #yaml-output::-webkit-scrollbar-track { background: transparent; }
+    #yaml-output::-webkit-scrollbar-thumb { background: var(--ibx-blue-gray); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<div class="brand-bar"></div>
+
+<header>
+  <div class="logo-diamond"></div>
+  <h1>Universal DDI — <span>Site Template Builder</span></h1>
+  <p>provision_site.py / decommission_site.py</p>
+</header>
+
+<div class="layout">
+
+  <!-- ================================================================ -->
+  <!-- LEFT: form panel                                                  -->
+  <!-- ================================================================ -->
+  <div class="form-panel">
+
+    <!-- Site -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <h2>Site</h2>
+        <span class="section-tag">site:</span>
+      </div>
+      <div class="section-card-body">
+        <div class="field-row">
+          <div class="field">
+            <label>Name <span class="required">*</span><span class="hint">lowercase, no spaces</span></label>
+            <input type="text" id="site-name" placeholder="london" oninput="update()">
+          </div>
+          <div class="field">
+            <label>Location <span class="hint">human-readable</span></label>
+            <input type="text" id="site-location" placeholder="London, UK" oninput="update()">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Region <span class="required">*</span></label>
+            <select id="site-region" onchange="update()">
+              <option value="">— Select region —</option>
+              <option value="AMER">AMER</option>
+              <option value="EMEA">EMEA</option>
+              <option value="APAC">APAC</option>
+              <option value="LATAM">LATAM</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Environment <span class="required">*</span></label>
+            <select id="site-environment" onchange="update()">
+              <option value="">— Select environment —</option>
+              <option value="production">production</option>
+              <option value="staging">staging</option>
+              <option value="development">development</option>
+              <option value="lab">lab</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Network -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <h2>Network</h2>
+        <span class="section-tag">network:</span>
+      </div>
+      <div class="section-card-body">
+        <div class="field-row">
+          <div class="field">
+            <label>IP Space <span class="hint">overrides INI default</span></label>
+            <input type="text" id="net-ip-space" placeholder="my-ip-space" oninput="update()">
+          </div>
+          <div class="field">
+            <label>Default Subnet Size <span class="hint">CIDR prefix</span></label>
+            <input type="number" id="net-subnet-size" placeholder="24" min="8" max="30" oninput="update()">
+          </div>
+        </div>
+
+        <!-- Subnets -->
+        <div style="margin-top: 8px; margin-bottom: 6px;">
+          <label>Subnets <span class="hint">leave empty to use built-in mgmt/lan/server defaults</span></label>
+        </div>
+        <div id="subnets-list"></div>
+        <button class="btn-add" onclick="addSubnet()">+ Add Subnet</button>
+      </div>
+    </div>
+
+    <!-- DNS -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <h2>DNS</h2>
+        <span class="section-tag">dns:</span>
+      </div>
+      <div class="section-card-body">
+        <div class="field-row">
+          <div class="field">
+            <label>Parent Zone <span class="hint">overrides INI default</span></label>
+            <input type="text" id="dns-parent" placeholder="internal.example.com" oninput="update()">
+          </div>
+          <div class="field">
+            <label>DNS View <span class="hint">overrides INI default</span></label>
+            <input type="text" id="dns-view" placeholder="default" oninput="update()">
+          </div>
+        </div>
+        <div class="toggle-field">
+          <label class="toggle">
+            <input type="checkbox" id="dns-create-zone" onchange="update()">
+            <div class="toggle-track"></div>
+            <div class="toggle-thumb"></div>
+          </label>
+          <label for="dns-create-zone">Create DNS zone if it does not already exist</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hosts -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <h2>Hosts</h2>
+        <span class="section-tag">hosts:</span>
+      </div>
+      <div class="section-card-body">
+        <div style="margin-bottom: 8px;">
+          <label class="hint" style="font-size:12px; text-transform:none; letter-spacing:0; color:var(--ibx-text-muted);">
+            Leave empty to provision a single gateway host (gw01) in the first subnet.
+          </label>
+        </div>
+        <div id="hosts-list"></div>
+        <button class="btn-add" onclick="addHost()">+ Add Host</button>
+      </div>
+    </div>
+
+    <!-- Tags -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <h2>Extra Tags</h2>
+        <span class="section-tag">tags:</span>
+      </div>
+      <div class="section-card-body">
+        <div style="margin-bottom: 8px;">
+          <label class="hint" style="font-size:12px; text-transform:none; letter-spacing:0; color:var(--ibx-text-muted);">
+            Applied to the address block and all subnets. Owner is common here.
+          </label>
+        </div>
+        <div id="tags-list"></div>
+        <button class="btn-add" onclick="addTag()">+ Add Tag</button>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="actions">
+      <button class="btn-primary" onclick="downloadYAML()">Download .yaml</button>
+      <button class="btn-secondary" onclick="clearForm()">Clear Form</button>
+    </div>
+
+    <!-- CLI hint -->
+    <div class="cli-strip" id="cli-strip">
+      <div class="cli-strip-label">Provision command</div>
+      <code id="cli-provision"></code>
+    </div>
+    <div class="cli-strip" id="cli-strip-decom" style="margin-top:10px;">
+      <div class="cli-strip-label" style="color: #f9c74f;">Decommission command</div>
+      <code id="cli-decommission"></code>
+    </div>
+
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- RIGHT: YAML preview                                               -->
+  <!-- ================================================================ -->
+  <div class="preview-panel">
+    <div class="preview-header">
+      <h2>YAML Preview</h2>
+      <div class="preview-actions">
+        <button class="btn-icon" id="copy-btn" onclick="copyYAML()">Copy</button>
+        <button class="btn-icon" onclick="downloadYAML()">Download</button>
+      </div>
+    </div>
+    <div id="yaml-output"></div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast">Copied to clipboard</div>
+
+<script>
+  // ====================================================================
+  // State
+  // ====================================================================
+  let subnets = [];   // [{id, name, purpose, cidr, dhcp}]
+  let hosts   = [];   // [{id, hostname, subnet, comment}]
+  let tags    = [];   // [{id, key, value}]
+  let nextId  = 1;
+
+  // ====================================================================
+  // Subnet management
+  // ====================================================================
+  function addSubnet(data) {
+    const id = nextId++;
+    subnets.push({
+      id,
+      name:    data?.name    || '',
+      purpose: data?.purpose || 'mgmt',
+      cidr:    data?.cidr    || '',
+      dhcp:    data?.dhcp    !== undefined ? data.dhcp : false,
+    });
+    renderSubnets();
+    update();
+  }
+
+  function removeSubnet(id) {
+    subnets = subnets.filter(s => s.id !== id);
+    renderSubnets();
+    renderHosts();    // update subnet dropdowns
+    update();
+  }
+
+  function renderSubnets() {
+    const container = document.getElementById('subnets-list');
+    container.innerHTML = '';
+    subnets.forEach((s, idx) => {
+      const div = document.createElement('div');
+      div.className = 'list-item';
+      div.innerHTML = `
+        <div class="list-item-header">
+          <span class="list-item-title">Subnet ${idx + 1}</span>
+          <button class="btn-remove" onclick="removeSubnet(${s.id})">Remove</button>
+        </div>
+        <div class="field-row thirds">
+          <div class="field">
+            <label>Name</label>
+            <input type="text" placeholder="${siteName()}-mgmt" value="${esc(s.name)}"
+              oninput="subnets[${idx}].name=this.value; renderHosts(); update()">
+          </div>
+          <div class="field">
+            <label>Purpose</label>
+            <select onchange="subnets[${idx}].purpose=this.value; update()">
+              ${['mgmt','user-lan','server','dmz','storage','voice','iot','general'].map(p =>
+                `<option value="${p}" ${s.purpose===p?'selected':''}>${p}</option>`
+              ).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label>CIDR Size</label>
+            <input type="number" placeholder="24" value="${esc(s.cidr)}" min="8" max="30"
+              oninput="subnets[${idx}].cidr=this.value; update()">
+          </div>
+        </div>
+        <div class="toggle-field">
+          <label class="toggle">
+            <input type="checkbox" ${s.dhcp?'checked':''} onchange="subnets[${idx}].dhcp=this.checked; update()">
+            <div class="toggle-track"></div>
+            <div class="toggle-thumb"></div>
+          </label>
+          <label>Enable DHCP</label>
+        </div>`;
+      container.appendChild(div);
+    });
+  }
+
+  // ====================================================================
+  // Host management
+  // ====================================================================
+  function addHost(data) {
+    const id = nextId++;
+    hosts.push({
+      id,
+      hostname: data?.hostname || '',
+      subnet:   data?.subnet   || '',
+      comment:  data?.comment  || '',
+    });
+    renderHosts();
+    update();
+  }
+
+  function removeHost(id) {
+    hosts = hosts.filter(h => h.id !== id);
+    renderHosts();
+    update();
+  }
+
+  function renderHosts() {
+    const container = document.getElementById('hosts-list');
+    container.innerHTML = '';
+    const subnetOptions = subnets.map(s =>
+      `<option value="${esc(s.name)}" ${''==s.name?'disabled':''}>${s.name||'(unnamed)'}</option>`
+    ).join('');
+    const noSubnets = subnetOptions === '';
+
+    hosts.forEach((h, idx) => {
+      const div = document.createElement('div');
+      div.className = 'list-item';
+      div.innerHTML = `
+        <div class="list-item-header">
+          <span class="list-item-title">Host ${idx + 1}</span>
+          <button class="btn-remove" onclick="removeHost(${h.id})">Remove</button>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Hostname <span class="hint">short name only</span></label>
+            <input type="text" placeholder="gw01" value="${esc(h.hostname)}"
+              oninput="hosts[${idx}].hostname=this.value; update()">
+          </div>
+          <div class="field">
+            <label>Subnet <span class="hint">must match a subnet name above</span></label>
+            ${noSubnets
+              ? `<input type="text" placeholder="subnet-name" value="${esc(h.subnet)}"
+                   oninput="hosts[${idx}].subnet=this.value; update()">`
+              : `<select onchange="hosts[${idx}].subnet=this.value; update()">
+                   <option value="">— Select subnet —</option>
+                   ${subnets.map(s => `<option value="${esc(s.name)}" ${h.subnet===s.name?'selected':''}>${s.name||'(unnamed)'}</option>`).join('')}
+                 </select>`
+            }
+          </div>
+        </div>
+        <div class="field-row full">
+          <div class="field">
+            <label>Comment <span class="hint">optional</span></label>
+            <input type="text" placeholder="Site gateway" value="${esc(h.comment)}"
+              oninput="hosts[${idx}].comment=this.value; update()">
+          </div>
+        </div>`;
+      container.appendChild(div);
+    });
+  }
+
+  // ====================================================================
+  // Tag management
+  // ====================================================================
+  function addTag(data) {
+    const id = nextId++;
+    tags.push({ id, key: data?.key || '', value: data?.value || '' });
+    renderTags();
+    update();
+  }
+
+  function removeTag(id) {
+    tags = tags.filter(t => t.id !== id);
+    renderTags();
+    update();
+  }
+
+  function renderTags() {
+    const container = document.getElementById('tags-list');
+    container.innerHTML = '';
+    tags.forEach((t, idx) => {
+      const div = document.createElement('div');
+      div.className = 'list-item';
+      div.innerHTML = `
+        <div class="list-item-header">
+          <span class="list-item-title">Tag ${idx + 1}</span>
+          <button class="btn-remove" onclick="removeTag(${t.id})">Remove</button>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Key</label>
+            <input type="text" placeholder="Owner" value="${esc(t.key)}"
+              oninput="tags[${idx}].key=this.value; update()">
+          </div>
+          <div class="field">
+            <label>Value</label>
+            <input type="text" placeholder="network-team" value="${esc(t.value)}"
+              oninput="tags[${idx}].value=this.value; update()">
+          </div>
+        </div>`;
+      container.appendChild(div);
+    });
+  }
+
+  // ====================================================================
+  // YAML generation
+  // ====================================================================
+  function siteName() {
+    return document.getElementById('site-name').value.trim().toLowerCase() || 'site';
+  }
+
+  function buildYAML() {
+    const name   = v('site-name').toLowerCase();
+    const region = v('site-region');
+    const env    = v('site-environment');
+    const loc    = v('site-location');
+
+    const ipSpace    = v('net-ip-space');
+    const subnetSize = v('net-subnet-size');
+
+    const dnsParent = v('dns-parent');
+    const dnsView   = v('dns-view');
+    const createZone = document.getElementById('dns-create-zone').checked;
+
+    const lines = [];
+
+    // --- Site section ---
+    lines.push('site:');
+    if (name)   lines.push(`  name:        ${name}`);
+    if (region) lines.push(`  region:      ${region}`);
+    if (env)    lines.push(`  environment: ${env}`);
+    if (loc)    lines.push(`  location:    "${loc}"`);
+
+    // --- Network section ---
+    const hasNetwork = ipSpace || subnetSize || subnets.length > 0;
+    if (hasNetwork) {
+      lines.push('');
+      lines.push('network:');
+      if (ipSpace)    lines.push(`  ip_space:    ${ipSpace}`);
+      if (subnetSize) lines.push(`  subnet_size: ${subnetSize}`);
+
+      if (subnets.length > 0) {
+        lines.push('');
+        lines.push('  subnets:');
+        subnets.forEach(s => {
+          const sName = s.name || `${name}-${s.purpose}`;
+          lines.push(`    - name:    ${sName}`);
+          lines.push(`      purpose: ${s.purpose}`);
+          lines.push(`      dhcp:    ${s.dhcp}`);
+          if (s.cidr) lines.push(`      cidr:    ${s.cidr}`);
+        });
+      }
+    }
+
+    // --- DNS section ---
+    const hasDNS = dnsParent || dnsView || createZone;
+    if (hasDNS) {
+      lines.push('');
+      lines.push('dns:');
+      if (dnsParent) lines.push(`  parent:      ${dnsParent}`);
+      if (dnsView)   lines.push(`  view:        ${dnsView}`);
+      lines.push(`  create_zone: ${createZone}`);
+    }
+
+    // --- Hosts section ---
+    if (hosts.length > 0) {
+      lines.push('');
+      lines.push('hosts:');
+      hosts.forEach(h => {
+        if (!h.hostname) return;
+        lines.push(`  - hostname: ${h.hostname}`);
+        if (h.subnet)  lines.push(`    subnet:   ${h.subnet}`);
+        if (h.comment) lines.push(`    comment:  "${h.comment}"`);
+      });
+    }
+
+    // --- Tags section ---
+    const validTags = tags.filter(t => t.key && t.value);
+    if (validTags.length > 0) {
+      lines.push('');
+      lines.push('tags:');
+      validTags.forEach(t => {
+        lines.push(`  ${t.key}:${' '.repeat(Math.max(1, 12 - t.key.length))}${t.value}`);
+      });
+    }
+
+    return lines.join('\n');
+  }
+
+  // ====================================================================
+  // Syntax-highlighted YAML renderer
+  // ====================================================================
+  function highlight(yaml) {
+    return yaml
+      .split('\n')
+      .map(line => {
+        // Comment lines
+        if (/^\s*#/.test(line)) return `<span class="yaml-comment">${htmlEsc(line)}</span>`;
+
+        // List dash prefix
+        const dashMatch = line.match(/^(\s*)(- )(.*)$/);
+        if (dashMatch) {
+          return (
+            htmlEsc(dashMatch[1]) +
+            `<span class="yaml-dash">- </span>` +
+            highlightValue(dashMatch[3])
+          );
+        }
+
+        // key: value
+        const kvMatch = line.match(/^(\s*)([a-zA-Z_][a-zA-Z0-9_]*)(:)(\s*)(.*)$/);
+        if (kvMatch) {
+          const [, indent, key, colon, space, val] = kvMatch;
+          return (
+            htmlEsc(indent) +
+            `<span class="yaml-key">${htmlEsc(key)}</span>` +
+            htmlEsc(colon + space) +
+            highlightValue(val)
+          );
+        }
+
+        return htmlEsc(line);
+      })
+      .join('\n');
+  }
+
+  function highlightValue(val) {
+    if (!val) return '';
+    if (val === 'true' || val === 'false') return `<span class="yaml-bool">${val}</span>`;
+    if (/^\d+$/.test(val)) return `<span class="yaml-number">${val}</span>`;
+    if (/^"/.test(val)) return `<span class="yaml-string">${htmlEsc(val)}</span>`;
+    return htmlEsc(val);
+  }
+
+  function htmlEsc(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ====================================================================
+  // Update preview + CLI hints
+  // ====================================================================
+  function update() {
+    const yaml = buildYAML();
+    document.getElementById('yaml-output').innerHTML = highlight(yaml);
+
+    // CLI hints
+    const name = v('site-name').toLowerCase();
+    const tmpl = name ? `templates/site-${name}.yaml` : 'templates/site-<name>.yaml';
+    document.getElementById('cli-provision').textContent =
+      `python3 provision_site.py -t ${tmpl} --dry-run -v`;
+    document.getElementById('cli-decommission').textContent =
+      `python3 decommission_site.py -t ${tmpl} --dry-run -v`;
+  }
+
+  // ====================================================================
+  // Helpers
+  // ====================================================================
+  function v(id)  { return document.getElementById(id).value.trim(); }
+  function esc(s) { return (s||'').replace(/"/g,'&quot;'); }
+
+  function clearForm() {
+    ['site-name','site-location','net-ip-space','net-subnet-size',
+     'dns-parent','dns-view'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('site-region').value      = '';
+    document.getElementById('site-environment').value = '';
+    document.getElementById('dns-create-zone').checked = false;
+    subnets = []; hosts = []; tags = [];
+    renderSubnets(); renderHosts(); renderTags();
+    update();
+  }
+
+  // ====================================================================
+  // Download
+  // ====================================================================
+  function downloadYAML() {
+    const yaml = buildYAML();
+    const name = v('site-name') || 'site';
+    const blob = new Blob([yaml], {type: 'text/yaml'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `site-${name}.yaml`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast(`Downloaded site-${name}.yaml`);
+  }
+
+  // ====================================================================
+  // Copy to clipboard
+  // ====================================================================
+  function copyYAML() {
+    navigator.clipboard.writeText(buildYAML()).then(() => {
+      const btn = document.getElementById('copy-btn');
+      btn.classList.add('copied');
+      btn.textContent = 'Copied!';
+      showToast('Copied to clipboard');
+      setTimeout(() => { btn.classList.remove('copied'); btn.textContent = 'Copy'; }, 2000);
+    });
+  }
+
+  // ====================================================================
+  // Toast
+  // ====================================================================
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  // ====================================================================
+  // Seed with a sensible default (one subnet, one host, one tag)
+  // ====================================================================
+  window.addEventListener('DOMContentLoaded', () => {
+    addSubnet({name:'', purpose:'mgmt',    cidr:'24', dhcp:false});
+    addSubnet({name:'', purpose:'user-lan',cidr:'24', dhcp:true});
+    addSubnet({name:'', purpose:'server',  cidr:'24', dhcp:false});
+    addHost({hostname:'gw01', subnet:'', comment:'Site gateway'});
+    addTag({key:'Owner', value:''});
+    update();
+  });
+</script>
+
+</body>
+</html>
