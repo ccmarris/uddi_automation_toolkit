@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UDDI Automation Toolkit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet">
+<style>
+/* ── Brand tokens ───────────────────────────────────────────────────────── */
+:root {
+  --ibx-black:     #101820;
+  --ibx-navy:      #0a1f44;
+  --ibx-blue:      #005eb8;
+  --ibx-green:     #00BD4D;
+  --ibx-teal:      #00E2EC;
+  --ibx-white:     #ffffff;
+  --ibx-off-white: #f0efe9;
+  --ibx-steel:     #D9E1E2;
+  --ibx-blue-gray: #202D37;
+  --ibx-light:     #f4f6f9;
+  --ibx-border:    #d0d7e2;
+  --ibx-text:      #1a2b4a;
+  --ibx-muted:     #5A6470;
+  --ibx-danger:    #e53e3e;
+  --ibx-warn:      #d69e2e;
+  --ibx-gradient:  linear-gradient(to right, #FEDD00 0%, #00BD4D 35%, #00BD4D 65%, #00E2EC 100%);
+  --radius:        4px;
+  --sidebar-w:     260px;
+  --exec-w:        300px;
+  --header-h:      56px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Lato', sans-serif;
+  background: var(--ibx-light);
+  color: var(--ibx-text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Brand bar ── */
+.brand-bar { height: 4px; background: var(--ibx-gradient); flex-shrink: 0; }
+
+/* ── Header ── */
+header {
+  height: var(--header-h);
+  background: var(--ibx-black);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 14px;
+  flex-shrink: 0;
+}
+.logo-diamond {
+  width: 22px; height: 22px;
+  background: var(--ibx-green);
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+header .logo {
+  font-size: 16px; font-weight: 900;
+  color: var(--ibx-white); letter-spacing: 0.04em; text-transform: uppercase;
+}
+header .logo span { color: var(--ibx-green); }
+header .spacer { flex: 1; }
+#config-info {
+  font-size: 11px; color: var(--ibx-teal); opacity: 0.8;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 400px;
+}
+#status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ibx-muted); flex-shrink: 0;
+}
+#status-dot.ok  { background: var(--ibx-green); }
+#status-dot.err { background: var(--ibx-danger); }
+
+/* ── Main layout ── */
+.main { display: flex; flex: 1; overflow: hidden; }
+
+/* ── Sidebar ── */
+.sidebar {
+  width: var(--sidebar-w);
+  background: var(--ibx-navy);
+  display: flex; flex-direction: column;
+  flex-shrink: 0; overflow: hidden;
+}
+.sidebar-section {
+  padding: 12px 14px 4px;
+  font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+  text-transform: uppercase; color: rgba(255,255,255,0.35);
+}
+.tmpl-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+.tmpl-item {
+  padding: 9px 16px; font-size: 13px; color: rgba(255,255,255,0.75);
+  cursor: pointer; border-left: 3px solid transparent;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background 0.1s;
+}
+.tmpl-item:hover { background: rgba(255,255,255,0.07); }
+.tmpl-item.active {
+  background: rgba(0,189,77,0.15);
+  border-left-color: var(--ibx-green);
+  color: #fff; font-weight: 700;
+}
+.sidebar-actions {
+  padding: 10px 12px; display: flex; gap: 6px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.sidebar-actions button {
+  flex: 1; font-family: inherit; font-size: 12px;
+  padding: 6px 8px; border: 1px solid rgba(255,255,255,0.2);
+  border-radius: var(--radius); background: transparent;
+  color: rgba(255,255,255,0.75); cursor: pointer; transition: background 0.15s;
+}
+.sidebar-actions button:hover { background: rgba(255,255,255,0.1); }
+.sidebar-actions button.primary { border-color: var(--ibx-green); color: var(--ibx-green); }
+
+/* ── Centre panel ── */
+.centre-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--ibx-off-white); }
+
+/* ── Tabs ── */
+.tab-bar {
+  display: flex; align-items: center;
+  background: var(--ibx-black);
+  border-bottom: 2px solid var(--ibx-green);
+  flex-shrink: 0; padding: 0 16px; gap: 4px;
+}
+.tab-bar .tab-btn {
+  font-family: inherit; font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: rgba(255,255,255,0.5); background: none; border: none;
+  padding: 12px 16px; cursor: pointer; border-bottom: 2px solid transparent;
+  margin-bottom: -2px; transition: color 0.15s;
+}
+.tab-bar .tab-btn.active { color: var(--ibx-green); border-bottom-color: var(--ibx-green); }
+.tab-bar .tab-btn:hover:not(.active) { color: rgba(255,255,255,0.8); }
+.tab-bar .spacer { flex: 1; }
+.tab-bar .tmpl-name-badge {
+  font-size: 12px; color: rgba(255,255,255,0.5);
+  font-style: italic; padding-right: 8px;
+}
+
+/* ── Tab panels ── */
+.tab-panel { display: none; flex: 1; overflow: hidden; }
+.tab-panel.active { display: flex; flex: 1; overflow: hidden; }
+
+/* ── Builder tab: two-column ── */
+#tab-builder {
+  flex-direction: row;
+}
+.builder-form-col {
+  flex: 1; overflow-y: auto; padding: 24px 20px;
+}
+.builder-preview-col {
+  width: 380px; flex-shrink: 0;
+  background: var(--ibx-black);
+  display: flex; flex-direction: column;
+  border-left: 1px solid var(--ibx-blue-gray);
+}
+.preview-header {
+  padding: 12px 16px; border-bottom: 1px solid var(--ibx-blue-gray);
+  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.preview-header h3 {
+  color: var(--ibx-steel); font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.preview-actions { display: flex; gap: 6px; }
+.btn-icon {
+  background: var(--ibx-blue-gray); border: 1px solid #2e3d4a;
+  color: var(--ibx-steel); font-family: inherit; font-size: 11px; font-weight: 700;
+  padding: 4px 10px; border-radius: var(--radius); cursor: pointer;
+  text-transform: uppercase; letter-spacing: 0.05em; transition: background 0.15s, color 0.15s;
+}
+.btn-icon:hover { background: var(--ibx-green); color: var(--ibx-white); border-color: var(--ibx-green); }
+.btn-icon.active { background: var(--ibx-green); color: var(--ibx-white); border-color: var(--ibx-green); }
+#yaml-output {
+  flex: 1; overflow-y: auto; padding: 16px;
+  font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.7;
+  color: #c9d1d9; white-space: pre; tab-size: 2;
+}
+.yaml-key    { color: #00BD4D; }
+.yaml-string { color: #a8d8a8; }
+.yaml-bool   { color: var(--ibx-teal); }
+.yaml-number { color: #f9c74f; }
+.yaml-comment{ color: var(--ibx-muted); font-style: italic; }
+.yaml-dash   { color: var(--ibx-steel); }
+
+/* Builder actions row */
+.builder-actions {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  padding: 12px 16px; border-top: 1px solid var(--ibx-steel);
+  background: var(--ibx-white); flex-shrink: 0;
+}
+
+/* ── Raw YAML tab ── */
+#tab-yaml { flex-direction: column; }
+.yaml-toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 16px;
+  border-bottom: 1px solid var(--ibx-border);
+  background: var(--ibx-white); flex-shrink: 0;
+}
+.yaml-toolbar input {
+  font-family: inherit; font-size: 13px; font-weight: 700;
+  color: var(--ibx-text); border: 1px solid var(--ibx-border);
+  border-radius: var(--radius); padding: 4px 10px; width: 220px; outline: none;
+}
+.yaml-toolbar input:focus { border-color: var(--ibx-blue); }
+.yaml-toolbar .spacer { flex: 1; }
+#raw-editor {
+  flex: 1; resize: none; border: none; outline: none; padding: 16px;
+  font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.6;
+  color: var(--ibx-text); background: #fafbfd; overflow-y: auto;
+}
+
+/* ── Section cards (builder form) ── */
+.section-card {
+  background: var(--ibx-white); border: 1px solid var(--ibx-steel);
+  border-radius: var(--radius); margin-bottom: 16px; overflow: hidden;
+}
+.section-card-header {
+  background: var(--ibx-off-white); border-bottom: 2px solid var(--ibx-green);
+  padding: 10px 14px; display: flex; align-items: center; gap: 8px;
+}
+.section-card-header h2 {
+  font-size: 12px; font-weight: 900; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--ibx-black);
+}
+.section-card-header .section-tag {
+  font-size: 10px; font-weight: 700; color: var(--ibx-muted);
+  text-transform: uppercase; letter-spacing: 0.08em; margin-left: auto;
+  background: var(--ibx-steel); padding: 2px 6px; border-radius: 2px;
+}
+.section-card-body { padding: 16px 14px; }
+
+/* ── Form elements ── */
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.field-row.full    { grid-template-columns: 1fr; }
+.field-row.thirds  { grid-template-columns: 1fr 1fr 1fr; }
+.field-row.quads   { grid-template-columns: 1fr 1fr 1fr 1fr; }
+.field { display: flex; flex-direction: column; gap: 3px; }
+label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--ibx-muted);
+}
+label .required { color: var(--ibx-green); margin-left: 2px; }
+label .hint {
+  font-weight: 400; text-transform: none; letter-spacing: 0;
+  color: #9aa3ad; font-size: 10px; margin-left: 5px;
+}
+input[type="text"], input[type="number"], select {
+  background: var(--ibx-white); border: 1px solid var(--ibx-steel);
+  border-radius: var(--radius); color: var(--ibx-black); font-family: inherit;
+  font-size: 13px; padding: 6px 9px; transition: border-color 0.15s; width: 100%;
+}
+input[type="text"]:focus, input[type="number"]:focus, select:focus {
+  outline: none; border-color: var(--ibx-green);
+  box-shadow: 0 0 0 2px rgba(0,189,77,0.12);
+}
+input[type="text"]::placeholder { color: #b0b8c0; }
+
+/* Toggle */
+.toggle-field { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.toggle-field label {
+  text-transform: none; letter-spacing: 0; font-size: 13px;
+  font-weight: 400; color: var(--ibx-black); cursor: pointer;
+}
+.toggle { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+.toggle input { display: none; }
+.toggle-track {
+  position: absolute; inset: 0; background: var(--ibx-steel);
+  border-radius: 10px; cursor: pointer; transition: background 0.2s;
+}
+.toggle-thumb {
+  position: absolute; top: 3px; left: 3px; width: 14px; height: 14px;
+  background: var(--ibx-white); border-radius: 50%; transition: transform 0.2s; pointer-events: none;
+}
+.toggle input:checked ~ .toggle-track { background: var(--ibx-green); }
+.toggle input:checked ~ .toggle-thumb { transform: translateX(16px); }
+
+/* Dynamic list items */
+.list-item {
+  background: var(--ibx-off-white); border: 1px solid var(--ibx-steel);
+  border-left: 3px solid var(--ibx-green); border-radius: var(--radius);
+  padding: 10px; margin-bottom: 8px; position: relative;
+}
+.list-item-header {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+}
+.list-item-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ibx-muted); }
+.btn-remove {
+  background: none; border: 1px solid var(--ibx-steel); border-radius: var(--radius);
+  color: var(--ibx-muted); font-size: 10px; font-weight: 700; padding: 3px 7px;
+  cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em; transition: border-color 0.15s, color 0.15s;
+}
+.btn-remove:hover { border-color: #e05252; color: #e05252; }
+.btn-add {
+  background: transparent; border: 1px dashed var(--ibx-green);
+  border-radius: var(--radius); color: var(--ibx-green); font-family: inherit;
+  font-size: 11px; font-weight: 700; padding: 7px 14px; cursor: pointer;
+  text-transform: uppercase; letter-spacing: 0.06em; width: 100%; margin-top: 2px;
+  transition: background 0.15s;
+}
+.btn-add:hover { background: rgba(0,189,77,0.08); }
+
+/* DHCP range fields — shown only when DHCP is enabled */
+.dhcp-range-fields { display: none; }
+.dhcp-range-fields.visible { display: block; }
+
+/* Primary action buttons */
+.btn {
+  font-family: inherit; font-size: 12px; font-weight: 700; padding: 7px 16px;
+  border-radius: var(--radius); border: none; cursor: pointer;
+  transition: opacity 0.15s; white-space: nowrap;
+}
+.btn:hover { opacity: 0.85; }
+.btn-primary   { background: var(--ibx-green);  color: var(--ibx-white); }
+.btn-blue      { background: var(--ibx-blue);   color: var(--ibx-white); }
+.btn-secondary { background: var(--ibx-off-white); color: var(--ibx-text); border: 1px solid var(--ibx-steel); }
+.btn-danger    { background: var(--ibx-danger);  color: var(--ibx-white); }
+
+/* CLI strip */
+.cli-strip {
+  background: var(--ibx-blue-gray); border-radius: var(--radius);
+  padding: 10px 14px; border-left: 3px solid var(--ibx-teal); margin-top: 10px;
+}
+.cli-strip-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--ibx-teal); margin-bottom: 4px;
+}
+.cli-strip code {
+  font-family: 'Courier New', monospace; font-size: 11px; color: var(--ibx-white); word-break: break-all;
+}
+
+/* ── Execution panel ── */
+.exec-panel {
+  width: var(--exec-w); flex-shrink: 0; display: flex; flex-direction: column;
+  border-left: 1px solid var(--ibx-border); background: var(--ibx-white); overflow: hidden;
+}
+.exec-header {
+  padding: 12px 14px; font-size: 10px; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--ibx-muted);
+  border-bottom: 1px solid var(--ibx-border); flex-shrink: 0;
+}
+.exec-controls {
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+  border-bottom: 1px solid var(--ibx-border); flex-shrink: 0;
+}
+.exec-controls label {
+  font-size: 10px; font-weight: 700; color: var(--ibx-muted);
+  display: block; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.exec-controls select {
+  width: 100%; font-family: inherit; font-size: 13px; padding: 6px 9px;
+  border: 1px solid var(--ibx-border); border-radius: var(--radius);
+  color: var(--ibx-text); background: var(--ibx-light); outline: none;
+}
+.exec-controls select:focus { border-color: var(--ibx-blue); }
+.exec-toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.exec-toggle-row span { font-size: 12px; color: var(--ibx-text); }
+
+/* Exec toggles (same structure, different look) */
+.exec-toggle { position: relative; width: 36px; height: 20px; }
+.exec-toggle input { opacity: 0; width: 0; height: 0; }
+.exec-toggle-slider {
+  position: absolute; inset: 0; background: var(--ibx-border); border-radius: 20px;
+  cursor: pointer; transition: background 0.2s;
+}
+.exec-toggle-slider::before {
+  content: ''; position: absolute; width: 14px; height: 14px;
+  left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform 0.2s;
+}
+.exec-toggle input:checked + .exec-toggle-slider { background: var(--ibx-green); }
+.exec-toggle input:checked + .exec-toggle-slider::before { transform: translateX(16px); }
+
+.exec-btn-row { display: flex; gap: 6px; }
+.exec-btn-row .btn { flex: 1; font-size: 11px; padding: 7px 6px; }
+
+/* Output area */
+.output-area {
+  flex: 1; overflow-y: auto; background: #0d1117; padding: 10px 12px;
+  display: flex; flex-direction: column;
+}
+#output {
+  font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.55;
+  color: #c9d1d9; white-space: pre-wrap; word-break: break-word; flex: 1;
+}
+#output .out-success { color: #7ee787; }
+#output .out-error   { color: #ff7b72; }
+#output .out-warn    { color: #e3b341; }
+#output .out-dryrun  { color: #a5d6ff; }
+.output-footer {
+  display: flex; gap: 6px; padding: 6px 14px;
+  border-top: 1px solid #21262d; flex-shrink: 0; background: #0d1117;
+}
+.output-footer button {
+  font-family: inherit; font-size: 11px; padding: 3px 9px; border-radius: var(--radius);
+  border: 1px solid #30363d; background: #161b22; color: #8b949e; cursor: pointer;
+}
+.output-footer button:hover { background: #21262d; color: #c9d1d9; }
+
+/* ── Query results panel ── */
+.query-results {
+  flex: 1; overflow-y: auto; padding: 10px 12px;
+  background: var(--ibx-white); display: flex; flex-direction: column; gap: 8px;
+}
+.qr-card {
+  border: 1px solid var(--ibx-border); border-radius: var(--radius);
+  overflow: hidden; font-size: 12px;
+}
+.qr-card-header {
+  background: var(--ibx-off-white); border-bottom: 2px solid var(--ibx-green);
+  padding: 6px 10px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.07em; color: var(--ibx-muted);
+  display: flex; align-items: center; gap: 8px;
+}
+.qr-card-header .qr-title { color: var(--ibx-black); }
+.qr-badge {
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 2px;
+  background: var(--ibx-steel); color: var(--ibx-text);
+}
+.qr-badge.ok  { background: rgba(0,189,77,0.15); color: #006630; }
+.qr-badge.err { background: rgba(229,62,62,0.12); color: #c53030; }
+.qr-card-body { padding: 8px 10px; }
+.qr-kv { display: flex; gap: 6px; padding: 2px 0; flex-wrap: wrap; }
+.qr-kv dt { font-weight: 700; color: var(--ibx-muted); min-width: 80px; flex-shrink: 0; }
+.qr-kv dd { color: var(--ibx-black); font-family: 'Courier New', monospace; }
+.qr-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.qr-tag {
+  font-size: 10px; padding: 2px 7px; border-radius: 2px;
+  background: var(--ibx-steel); color: var(--ibx-text);
+}
+.qr-subnet {
+  border: 1px solid var(--ibx-border); border-radius: var(--radius);
+  margin-bottom: 6px; overflow: hidden;
+}
+.qr-subnet-header {
+  background: var(--ibx-off-white); padding: 5px 8px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.qr-subnet-cidr { font-family: 'Courier New', monospace; font-weight: 700; color: var(--ibx-blue); }
+.qr-subnet-name { color: var(--ibx-muted); font-size: 11px; }
+.qr-hosts { padding: 4px 8px 6px; }
+.qr-host-row {
+  display: flex; gap: 10px; padding: 3px 0;
+  border-top: 1px solid var(--ibx-steel); align-items: baseline;
+}
+.qr-host-row:first-child { border-top: none; }
+.qr-host-name { font-family: 'Courier New', monospace; font-size: 11px; flex: 1; color: var(--ibx-text); }
+.qr-host-ip   { font-family: 'Courier New', monospace; font-size: 11px; color: var(--ibx-blue); min-width: 100px; }
+.qr-no-hosts  { font-size: 11px; color: var(--ibx-muted); padding: 3px 0; font-style: italic; }
+
+/* ── Toast ── */
+#toast {
+  position: fixed; bottom: 24px; right: 24px; background: var(--ibx-green);
+  color: var(--ibx-white); font-size: 13px; font-weight: 700; padding: 10px 18px;
+  border-radius: var(--radius); box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none; z-index: 100;
+}
+#toast.show { opacity: 1; transform: translateY(0); }
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
+#yaml-output::-webkit-scrollbar-thumb { background: var(--ibx-blue-gray); }
+</style>
+</head>
+<body>
+
+<div class="brand-bar"></div>
+
+<header>
+  <div class="logo-diamond"></div>
+  <div class="logo">Universal DDI — <span>Automation Toolkit</span></div>
+  <div class="spacer"></div>
+  <div id="config-info"></div>
+  <div id="status-dot" title="Server status"></div>
+</header>
+
+<div class="main">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────── -->
+  <div class="sidebar">
+    <div class="sidebar-section">Templates</div>
+    <div class="tmpl-list" id="tmpl-list"></div>
+    <div class="sidebar-actions">
+      <button class="primary" onclick="newTemplate()">+ New</button>
+      <button onclick="refreshTemplates()">↺</button>
+    </div>
+  </div>
+
+  <!-- ── Centre panel ─────────────────────────────────────────────────── -->
+  <div class="centre-panel">
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-btn-builder" onclick="switchTab('builder')">Builder</button>
+      <button class="tab-btn"        id="tab-btn-yaml"    onclick="switchTab('yaml')">Raw YAML</button>
+      <div class="spacer"></div>
+      <span class="tmpl-name-badge" id="current-tmpl-badge">(unsaved)</span>
+    </div>
+
+    <!-- ── Builder tab ── -->
+    <div class="tab-panel active" id="tab-builder">
+
+      <!-- Left: form -->
+      <div class="builder-form-col">
+
+        <!-- Site -->
+        <div class="section-card">
+          <div class="section-card-header"><h2>Site</h2><span class="section-tag">site:</span></div>
+          <div class="section-card-body">
+            <div class="field-row">
+              <div class="field">
+                <label>Name <span class="required">*</span><span class="hint">lowercase, no spaces</span></label>
+                <input type="text" id="site-name" placeholder="london" oninput="builderUpdate()">
+              </div>
+              <div class="field">
+                <label>Location<span class="hint">human-readable</span></label>
+                <input type="text" id="site-location" placeholder="London, UK" oninput="builderUpdate()">
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label>Region <span class="required">*</span></label>
+                <select id="site-region" onchange="builderUpdate()">
+                  <option value="">— Select region —</option>
+                  <option>AMER</option><option>EMEA</option><option>APAC</option><option>LATAM</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Environment <span class="required">*</span></label>
+                <select id="site-environment" onchange="builderUpdate()">
+                  <option value="">— Select environment —</option>
+                  <option>production</option><option>staging</option>
+                  <option>development</option><option>lab</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Network -->
+        <div class="section-card">
+          <div class="section-card-header"><h2>Network</h2><span class="section-tag">network:</span></div>
+          <div class="section-card-body">
+            <div class="field-row">
+              <div class="field">
+                <label>IP Space<span class="hint">overrides INI</span></label>
+                <input type="text" id="net-ip-space" placeholder="my-ip-space" oninput="builderUpdate()">
+              </div>
+              <div class="field">
+                <label>Default Subnet Size<span class="hint">CIDR</span></label>
+                <input type="number" id="net-subnet-size" placeholder="24" min="8" max="30" oninput="builderUpdate()">
+              </div>
+            </div>
+            <div style="margin: 6px 0 4px;">
+              <label>Subnets<span class="hint">leave empty for built-in mgmt/lan/server defaults</span></label>
+            </div>
+            <div id="subnets-list"></div>
+            <button class="btn-add" onclick="addSubnet()">+ Add Subnet</button>
+          </div>
+        </div>
+
+        <!-- DNS -->
+        <div class="section-card">
+          <div class="section-card-header"><h2>DNS</h2><span class="section-tag">dns:</span></div>
+          <div class="section-card-body">
+            <div class="field-row">
+              <div class="field">
+                <label>Parent Zone<span class="hint">overrides INI</span></label>
+                <input type="text" id="dns-parent" placeholder="internal.example.com" oninput="builderUpdate()">
+              </div>
+              <div class="field">
+                <label>DNS View<span class="hint">overrides INI</span></label>
+                <input type="text" id="dns-view" placeholder="default" oninput="builderUpdate()">
+              </div>
+            </div>
+            <div class="toggle-field">
+              <label class="toggle">
+                <input type="checkbox" id="dns-create-zone" onchange="builderUpdate()">
+                <div class="toggle-track"></div><div class="toggle-thumb"></div>
+              </label>
+              <label for="dns-create-zone">Create DNS zone if it does not already exist</label>
+            </div>
+            <div class="toggle-field">
+              <label class="toggle">
+                <input type="checkbox" id="dns-reverse-zone" onchange="builderUpdate()">
+                <div class="toggle-track"></div><div class="toggle-thumb"></div>
+              </label>
+              <label for="dns-reverse-zone">Create reverse (in-addr.arpa) DNS zones per subnet</label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hosts -->
+        <div class="section-card">
+          <div class="section-card-header"><h2>Hosts</h2><span class="section-tag">hosts:</span></div>
+          <div class="section-card-body">
+            <p style="font-size:12px;color:var(--ibx-muted);margin-bottom:8px;">Leave empty to provision a single gw01 in the first subnet.</p>
+            <div id="hosts-list"></div>
+            <button class="btn-add" onclick="addHost()">+ Add Host</button>
+          </div>
+        </div>
+
+        <!-- Tags -->
+        <div class="section-card">
+          <div class="section-card-header"><h2>Extra Tags</h2><span class="section-tag">tags:</span></div>
+          <div class="section-card-body">
+            <p style="font-size:12px;color:var(--ibx-muted);margin-bottom:8px;">Applied to the block and all subnets. <code>Owner</code> is common here.</p>
+            <div id="tags-list"></div>
+            <button class="btn-add" onclick="addTag()">+ Add Tag</button>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="builder-actions">
+          <button class="btn btn-primary"   id="btn-builder-save"   onclick="builderSave()">Save</button>
+          <button class="btn btn-secondary" onclick="builderSaveAs()">Save As…</button>
+          <button class="btn btn-blue"      onclick="downloadBuilderYAML()">Download .yaml</button>
+          <button class="btn btn-secondary" onclick="clearBuilder()">Clear</button>
+        </div>
+
+        <!-- CLI hints -->
+        <div class="cli-strip" style="margin:0 0 10px;">
+          <div class="cli-strip-label">Provision</div>
+          <code id="cli-provision"></code>
+        </div>
+        <div class="cli-strip" style="border-left-color:#f9c74f; margin-bottom:24px;">
+          <div class="cli-strip-label" style="color:#f9c74f;">Decommission</div>
+          <code id="cli-decommission"></code>
+        </div>
+
+      </div><!-- /builder-form-col -->
+
+      <!-- Right: YAML preview -->
+      <div class="builder-preview-col">
+        <div class="preview-header">
+          <h3>YAML Preview</h3>
+          <div class="preview-actions">
+            <button class="btn-icon" id="copy-yaml-btn" onclick="copyBuilderYAML()">Copy</button>
+            <button class="btn-icon" onclick="downloadBuilderYAML()">Download</button>
+          </div>
+        </div>
+        <div id="yaml-output"></div>
+      </div>
+
+    </div><!-- /tab-builder -->
+
+    <!-- ── Raw YAML tab ── -->
+    <div class="tab-panel" id="tab-yaml">
+      <div class="yaml-toolbar">
+        <input type="text" id="tmpl-name" placeholder="site-name.yaml" spellcheck="false">
+        <div class="spacer"></div>
+        <button class="btn btn-secondary" onclick="saveRawTemplate()">Save</button>
+        <button class="btn btn-danger" id="btn-delete" style="display:none" onclick="deleteTemplate()">Delete</button>
+      </div>
+      <textarea id="raw-editor" spellcheck="false" placeholder="# Paste or load a YAML site template here"></textarea>
+    </div>
+
+  </div><!-- /centre-panel -->
+
+  <!-- ── Execution panel ─────────────────────────────────────────────── -->
+  <div class="exec-panel">
+    <div class="exec-header">Execute</div>
+
+    <div class="exec-controls">
+      <div>
+        <label>Action</label>
+        <select id="action-select" onchange="updateExecControls()">
+          <option value="provision">Provision</option>
+          <option value="decommission">Decommission</option>
+          <option value="query">Query (read-only)</option>
+        </select>
+      </div>
+
+      <div class="exec-toggle-row" id="row-dry-run">
+        <span>Dry run (preview only)</span>
+        <label class="exec-toggle">
+          <input type="checkbox" id="dry-run-toggle" checked>
+          <span class="exec-toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="exec-toggle-row" id="row-force" style="display:none">
+        <span>Force (skip confirmation)</span>
+        <label class="exec-toggle">
+          <input type="checkbox" id="force-toggle">
+          <span class="exec-toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="exec-toggle-row" id="row-create-zone" style="display:none">
+        <span>Create zone if absent</span>
+        <label class="exec-toggle">
+          <input type="checkbox" id="exec-create-zone">
+          <span class="exec-toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="exec-toggle-row" id="row-reverse-zone" style="display:none">
+        <span>Create reverse zones</span>
+        <label class="exec-toggle">
+          <input type="checkbox" id="exec-reverse-zone">
+          <span class="exec-toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="exec-btn-row">
+        <button class="btn btn-primary" id="btn-execute" onclick="execute()">▶ Run</button>
+        <button class="btn btn-secondary" id="btn-stop" style="display:none" onclick="stopExec()">■ Stop</button>
+      </div>
+    </div>
+
+    <div class="output-area" id="output-area">
+      <pre id="output"></pre>
+    </div>
+    <div class="query-results" id="query-results" style="display:none"></div>
+    <div class="output-footer">
+      <button onclick="clearOutput()">Clear</button>
+      <button id="btn-copy-output" onclick="copyOutput()">Copy</button>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

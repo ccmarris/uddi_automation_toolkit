@@ -60,7 +60,7 @@
 
  Configuration:
     Shares the same INI file as provision_site.py (default:
-    provision_site.ini):
+    uddi.ini):
 
       [UDDI]
       api_key  = <your BloxOne/Universal DDI API key>
@@ -109,16 +109,15 @@ __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
 import argparse
-import configparser
 import datetime
-import json
+import ipaddress
 import logging
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
-import requests
-import yaml
+from uddi_client import UDDIClient
+from uddi_utils import load_yaml_template, read_config, setup_logging, reverse_zone_fqdn
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +165,10 @@ class DecommissionResult:
     block_id: str = ''
     block_address: str = ''
     hosts_deleted: list[dict] = field(default_factory=list)
+    dhcp_ranges_deleted: list[dict] = field(default_factory=list)
     dns_zone_deleted: bool = False
     dns_zone_fqdn: str = ''
+    reverse_zones_deleted: list[dict] = field(default_factory=list)
     subnets_deleted: list[dict] = field(default_factory=list)
     block_updated: bool = False
     final_status: str = ''
@@ -177,147 +178,6 @@ class DecommissionResult:
 # ---------------------------------------------------------------------------
 # YAML template loader
 # ---------------------------------------------------------------------------
-
-def load_yaml_template(path: str) -> dict:
-    '''
-    Load and parse a YAML site template file.
-
-    Only the site identity fields are used during decommission
-    (site.name, network.ip_space, dns.parent, dns.view).  The subnet
-    plan, host list, and tag sections are intentionally ignored — the
-    live resources are discovered directly from the API.
-
-    Args:
-        path: Filesystem path to the YAML template
-
-    Returns:
-        Parsed template as a plain dict
-
-    Raises:
-        SystemExit if the file cannot be opened or is not valid YAML
-    '''
-    logger.info('Loading YAML template: %s', path)
-    try:
-        with open(path, 'r') as fh:
-            data = yaml.safe_load(fh)
-    except FileNotFoundError:
-        logger.error('YAML template not found: %s', path)
-        sys.exit(1)
-    except yaml.YAMLError as exc:
-        logger.error('Invalid YAML in %s: %s', path, exc)
-        sys.exit(1)
-
-    if not isinstance(data, dict):
-        logger.error('YAML template must be a mapping (dict) at the top level: %s', path)
-        sys.exit(1)
-
-    logger.debug('Template loaded: %s', data)
-    return data
-
-
-# ---------------------------------------------------------------------------
-# Infoblox Universal DDI API client
-# ---------------------------------------------------------------------------
-
-class UDDIClient:
-    '''
-    Thin wrapper around the Infoblox Universal DDI REST API.
-
-    Handles authentication, base URL construction, and common error
-    handling so decommission logic stays clean.
-    '''
-
-    BASE_PATH = '/api/ddi/v1'
-
-    def __init__(self, url: str, api_key: str) -> None:
-        '''
-        Initialise the client.
-
-        Args:
-            url:     Base CSP URL, e.g. https://csp.infoblox.com
-            api_key: BloxOne / Universal DDI API key
-        '''
-        self.base_url = url.rstrip('/') + self.BASE_PATH
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Authorization': f'Token {api_key}',
-            'Content-Type': 'application/json',
-        })
-
-    def get(self, path: str, params: Optional[dict] = None) -> dict:
-        '''
-        HTTP GET with error handling.
-
-        Args:
-            path:   API path relative to BASE_PATH
-            params: Optional query parameters
-
-        Returns:
-            Parsed JSON response body
-
-        Raises:
-            SystemExit on HTTP error
-        '''
-        url = self.base_url + path
-        logger.debug('GET %s  params=%s', url, params)
-        response = self.session.get(url, params=params)
-        self._check(response)
-        return response.json()
-
-    def patch(self, path: str, body: dict) -> dict:
-        '''
-        HTTP PATCH with error handling.
-
-        Args:
-            path: API path relative to BASE_PATH (must include resource ID)
-            body: Fields to update
-
-        Returns:
-            Parsed JSON response body
-
-        Raises:
-            SystemExit on HTTP error
-        '''
-        url = self.base_url + path
-        logger.debug('PATCH %s  body=%s', url, json.dumps(body))
-        response = self.session.patch(url, json=body)
-        self._check(response)
-        return response.json()
-
-    def delete(self, path: str) -> None:
-        '''
-        HTTP DELETE with error handling.
-
-        Args:
-            path: API path relative to BASE_PATH (must include resource ID)
-
-        Raises:
-            SystemExit on HTTP error
-        '''
-        url = self.base_url + path
-        logger.debug('DELETE %s', url)
-        response = self.session.delete(url)
-        self._check(response)
-
-    def _check(self, response: requests.Response) -> None:
-        '''
-        Raise a clear error on non-2xx responses.
-
-        Args:
-            response: requests.Response to inspect
-
-        Raises:
-            SystemExit with status code and body on error
-        '''
-        if not response.ok:
-            logger.error(
-                'API error %s %s: %s',
-                response.request.method,
-                response.url,
-                response.text,
-            )
-            sys.exit(1)
-
 
 # ---------------------------------------------------------------------------
 # Site decommissioner
@@ -498,16 +358,13 @@ class SiteDecommissioner:
         '''
         removed: list[dict] = []
 
+        logger.debug('Fetching all hosts for client-side subnet filtering')
+        all_hosts = self.client.get('/ipam/host').get('results', [])
+
         for subnet in subnets:
             subnet_id = subnet['id']
             subnet_cidr = f'{subnet["address"]}/{subnet["cidr"]}'
             logger.info('  Searching for hosts in subnet %s', subnet_cidr)
-
-            data = self.client.get(
-                '/ipam/host',
-                params={'_filter': f'addresses.address>="{subnet["address"]}"'},
-            )
-            all_hosts = data.get('results', [])
 
             # Filter to hosts that have at least one address in this subnet
             site_hosts = [
@@ -592,6 +449,97 @@ class SiteDecommissioner:
         if not self.cfg.dry_run:
             self.client.delete(f'/{zone_id}')
         return True
+
+    # ------------------------------------------------------------------
+    # Step 6c: Delete reverse DNS zones for subnets
+    # ------------------------------------------------------------------
+
+    def delete_reverse_zones(self, subnets: list[dict]) -> list[dict]:
+        '''
+        Delete reverse (in-addr.arpa) DNS zones for all provided subnets,
+        if they exist in the configured DNS view.
+
+        Zones that are not found are silently skipped — it is valid to
+        decommission a site that was provisioned without reverse zones.
+
+        Args:
+            subnets: List of subnet resource dicts (must have 'address'
+                     and 'cidr')
+
+        Returns:
+            List of dicts describing each deleted (or dry-run) zone
+        '''
+        deleted: list[dict] = []
+        for subnet in subnets:
+            try:
+                fqdn = reverse_zone_fqdn(subnet['address'], int(subnet['cidr']))
+            except (KeyError, ValueError) as exc:
+                logger.warning('Cannot compute reverse zone for subnet %s: %s',
+                               subnet.get('id'), exc)
+                continue
+
+            existing = self.client.get(
+                '/dns/auth_zone',
+                params={
+                    '_filter': (
+                        f'fqdn=="{fqdn}." and '
+                        f'view=="{self._view_id}"'
+                    ),
+                },
+            )
+            results = existing.get('results', [])
+            if not results:
+                logger.debug('Reverse zone not found (skipping): %s', fqdn)
+                continue
+
+            zone = results[0]
+            zone_id = zone.get('id', '')
+            logger.info(
+                '%sDeleting reverse zone: %s  id=%s',
+                '[DRY-RUN] ' if self.cfg.dry_run else '',
+                fqdn, zone_id,
+            )
+            if not self.cfg.dry_run:
+                self.client.delete(f'/{zone_id}')
+            deleted.append({'id': zone_id, 'fqdn': fqdn})
+
+        return deleted
+
+    # ------------------------------------------------------------------
+    # Step 6b: Delete DHCP ranges within a subnet
+    # ------------------------------------------------------------------
+
+    def delete_dhcp_ranges(self, subnet: dict) -> list[dict]:
+        '''
+        Delete all DHCP ranges that belong to the given subnet.
+
+        Args:
+            subnet: Subnet resource dict (must have 'id')
+
+        Returns:
+            List of dicts describing each deleted (or dry-run) DHCP range
+        '''
+        all_ranges = self.client.get('/dhcp/range').get('results', [])
+        ranges = [
+            r for r in all_ranges
+            if _in_subnet(r.get('start', ''), subnet)
+        ]
+        deleted: list[dict] = []
+        for r in ranges:
+            range_id = r.get('id', '')
+            logger.info(
+                '%sDeleting DHCP range %s-%s  id=%s',
+                '[DRY-RUN] ' if self.cfg.dry_run else '',
+                r.get('start', ''), r.get('end', ''), range_id,
+            )
+            if not self.cfg.dry_run:
+                self.client.delete(f'/{range_id}')
+            deleted.append({
+                'id':    range_id,
+                'start': r.get('start', ''),
+                'end':   r.get('end', ''),
+            })
+        return deleted
 
     # ------------------------------------------------------------------
     # Step 7: Delete subnets
@@ -708,6 +656,13 @@ class SiteDecommissioner:
         # Step 6: Delete DNS zone
         result.dns_zone_fqdn = self.cfg.dns_zone
         result.dns_zone_deleted = self.delete_dns_zone()
+
+        # Step 6b: Delete DHCP ranges in each subnet
+        for subnet in subnets:
+            result.dhcp_ranges_deleted.extend(self.delete_dhcp_ranges(subnet))
+
+        # Step 6c: Delete reverse DNS zones for subnets (silently skips absent zones)
+        result.reverse_zones_deleted = self.delete_reverse_zones(subnets)
 
         # Step 7: Delete subnets
         result.subnets_deleted = self.delete_subnets(subnets)
@@ -847,58 +802,6 @@ def print_result(result: DecommissionResult) -> None:
 # Configuration and CLI
 # ---------------------------------------------------------------------------
 
-def read_config(config_file: str) -> configparser.ConfigParser:
-    '''
-    Read INI configuration file.
-
-    Args:
-        config_file: Path to the INI configuration file
-
-    Returns:
-        Populated ConfigParser instance
-
-    Raises:
-        SystemExit if the file cannot be read or required keys are missing
-    '''
-    cfg = configparser.ConfigParser()
-    if not cfg.read(config_file):
-        logger.error('Configuration file not found: %s', config_file)
-        sys.exit(1)
-
-    required = [('UDDI', 'api_key'), ('UDDI', 'url')]
-    for section, key in required:
-        if not cfg.has_option(section, key):
-            logger.error(
-                'Missing required config [%s] %s in %s',
-                section, key, config_file,
-            )
-            sys.exit(1)
-
-    return cfg
-
-
-def setup_logging(debug: bool = False, verbose: bool = False) -> None:
-    '''
-    Configure root logger and this module's logger.
-
-    Args:
-        debug:   Enable DEBUG level (overrides verbose)
-        verbose: Enable INFO level (default is WARNING)
-    '''
-    if debug:
-        level = logging.DEBUG
-    elif verbose:
-        level = logging.INFO
-    else:
-        level = logging.WARNING
-
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s %(levelname)-8s %(name)s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-    )
-
-
 def parseargs() -> argparse.Namespace:
     '''
     Parse command-line arguments.
@@ -989,9 +892,9 @@ def parseargs() -> argparse.Namespace:
     )
     parser.add_argument(
         '-c', '--config',
-        default='provision_site.ini',
+        default='uddi.ini',
         metavar='FILE',
-        help='Path to INI configuration file (default: provision_site.ini)',
+        help='Path to INI configuration file (default: uddi.ini in current working directory)',
     )
 
     # Logging
