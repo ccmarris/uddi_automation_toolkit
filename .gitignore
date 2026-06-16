@@ -1,6 +1,8 @@
 # Credentials — never commit these
 provision_site.ini
+uddi.ini
 *.ini
+!uddi.ini.example
 *.cfg
 .env
 
