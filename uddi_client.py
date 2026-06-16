@@ -50,7 +50,7 @@
 
 ------------------------------------------------------------------------
 '''
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
@@ -74,16 +74,15 @@ class UDDIClient:
 
     BASE_PATH = '/api/ddi/v1'
 
-    def __init__(self, url: str, api_key: str) -> None:
+    def __init__(self, url: str, api_key: str, verify_ssl: bool = True) -> None:
         '''
         Initialise the client.
 
         Args:
-            url:     Base CSP URL, e.g. https://csp.infoblox.com
-                     Surrounding quotes (from INI files) are stripped
-                     automatically.
-            api_key: BloxOne / Universal DDI API key. Surrounding
-                     quotes (from INI files) are stripped automatically.
+            url:        Base CSP URL, e.g. https://csp.infoblox.com
+            api_key:    BloxOne / Universal DDI API key.
+            verify_ssl: Verify SSL certificates (default True). Set to
+                        False for self-signed certs in lab environments.
         '''
         self.base_url = url.strip("'\"").rstrip('/') + self.BASE_PATH
         _key = api_key.strip("'\"")
@@ -92,6 +91,7 @@ class UDDIClient:
             'Authorization': f'Token {_key}',
             'Content-Type': 'application/json',
         })
+        self.session.verify = verify_ssl
 
     def get(self, path: str, params: Optional[dict] = None) -> dict:
         '''

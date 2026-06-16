@@ -96,7 +96,7 @@ import subprocess
 import sys
 
 from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
-from uddi_utils import read_config, setup_logging
+from uddi_utils import read_config, resolve_credentials, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -585,7 +585,15 @@ def main() -> None:
 
     # Resolve config file path
     CONFIG_FILE = args.config
-    read_config(CONFIG_FILE)   # validate at startup; exits on error
+
+    # Validate credentials at startup — warn but don't exit if the INI is
+    # absent, since api_key may arrive via INFOBLOX_PORTAL_KEY / UDDI_API_KEY.
+    api_key, _, _ = resolve_credentials('', CONFIG_FILE)
+    if not api_key:
+        logger.warning(
+            'No API key found in %s or environment (INFOBLOX_PORTAL_KEY / UDDI_API_KEY). '
+            'Execution endpoints will fail until a key is available.', CONFIG_FILE,
+        )
 
     # Resolve templates directory
     if args.templates_dir:

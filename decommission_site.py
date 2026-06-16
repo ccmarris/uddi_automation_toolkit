@@ -117,7 +117,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from uddi_client import UDDIClient
-from uddi_utils import load_yaml_template, read_config, setup_logging, reverse_zone_fqdn
+from uddi_utils import load_yaml_template, read_config, resolve_credentials, setup_logging, reverse_zone_fqdn
 
 logger = logging.getLogger(__name__)
 
@@ -896,6 +896,19 @@ def parseargs() -> argparse.Namespace:
         metavar='FILE',
         help='Path to INI configuration file (default: uddi.ini in current working directory)',
     )
+    parser.add_argument(
+        '--api-key',
+        default='',
+        metavar='KEY',
+        help='API key (overrides INI file and INFOBLOX_PORTAL_KEY / UDDI_API_KEY env vars)',
+    )
+    parser.add_argument(
+        '--no-verify-ssl',
+        dest='verify_ssl',
+        action='store_false',
+        default=True,
+        help='Disable SSL certificate verification (for lab / self-signed certs)',
+    )
 
     # Logging
     log_grp = parser.add_mutually_exclusive_group()
@@ -932,7 +945,19 @@ def main() -> None:
 
     logger.debug('Arguments: %s', args)
 
-    # Load INI config
+    # Resolve credentials (CLI flag > env var > INI file)
+    verify_ssl_override = None if args.verify_ssl else False
+    api_key, base_url, verify_ssl = resolve_credentials(
+        args.api_key, args.config, verify_ssl_override,
+    )
+    if not api_key:
+        logger.error(
+            'No API key found. Supply via --api-key, INFOBLOX_PORTAL_KEY env var, '
+            'or [UDDI] api_key in %s', args.config,
+        )
+        sys.exit(1)
+
+    # Load INI config for [DEFAULTS] section only
     cfg_file = read_config(args.config)
     ini = dict(cfg_file['DEFAULTS']) if cfg_file.has_section('DEFAULTS') else {}
 
@@ -990,10 +1015,7 @@ def main() -> None:
             sys.exit(0)
 
     # Initialise API client
-    client = UDDIClient(
-        url=cfg_file['UDDI']['url'],
-        api_key=cfg_file['UDDI']['api_key'],
-    )
+    client = UDDIClient(url=base_url, api_key=api_key, verify_ssl=verify_ssl)
 
     # Run decommissioner
     decommissioner = SiteDecommissioner(client, cfg)
