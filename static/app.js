@@ -81,9 +81,21 @@ function refreshTemplates() {
 }
 
 function _buildTree(list) {
-  // Convert flat [{name:'a/b/c.yaml',...}] into nested {dirs:{}, files:[]}
+  // Convert flat [{name, type}] into nested {dirs:{}, files:[]}
   const root = { dirs: {}, files: [] };
-  list.forEach(tmpl => {
+
+  // Ensure dir entries exist first (handles empty folders)
+  list.filter(e => e.type === 'dir').forEach(e => {
+    const parts = e.name.split('/');
+    let node = root;
+    parts.forEach(dir => {
+      if (!node.dirs[dir]) node.dirs[dir] = { dirs: {}, files: [] };
+      node = node.dirs[dir];
+    });
+  });
+
+  // Then place files
+  list.filter(e => e.type === 'file').forEach(tmpl => {
     const parts = tmpl.name.split('/');
     let node = root;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -93,6 +105,7 @@ function _buildTree(list) {
     }
     node.files.push(tmpl);
   });
+
   return root;
 }
 
@@ -119,8 +132,15 @@ function _renderNode(container, node, pathPrefix) {
     folderEl.dataset.path = dirPath;
     folderEl.innerHTML =
       '<span class="tmpl-folder-arrow">' + (collapsed ? '▶' : '▼') + '</span>' +
-      '<span class="tmpl-folder-name">' + dirName + '</span>';
-    folderEl.onclick = () => _toggleFolder(dirPath);
+      '<span class="tmpl-folder-name">' + dirName + '</span>' +
+      '<button class="tmpl-folder-menu-btn" title="Folder options">⋯</button>';
+    folderEl.querySelector('.tmpl-folder-name').onclick =
+      folderEl.querySelector('.tmpl-folder-arrow').onclick =
+        () => _toggleFolder(dirPath);
+    folderEl.querySelector('.tmpl-folder-menu-btn').onclick = (e) => {
+      e.stopPropagation();
+      _showFolderMenu(e, dirPath);
+    };
     container.appendChild(folderEl);
 
     // Folder children container
@@ -284,6 +304,108 @@ function deleteTemplate() {
 
 function setBadge(text) {
   document.getElementById('current-tmpl-badge').textContent = text;
+}
+
+// ── Folder management ─────────────────────────────────────────────────────────
+
+let _ctxMenu = null;
+
+function _closeFolderMenu() {
+  if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; }
+}
+
+function _showFolderMenu(e, dirPath) {
+  _closeFolderMenu();
+  const menu = document.createElement('div');
+  menu.className = 'folder-ctx-menu';
+  menu.innerHTML =
+    '<button onclick="_promptRenameFolder(\'' + dirPath.replace(/'/g, "\\'") + '\')">Rename…</button>' +
+    '<button onclick="_promptNewSubfolder(\'' + dirPath.replace(/'/g, "\\'") + '\')">New subfolder…</button>' +
+    '<button class="danger" onclick="_confirmDeleteFolder(\'' + dirPath.replace(/'/g, "\\'") + '\')">Delete…</button>';
+  menu.style.top  = e.clientY + 'px';
+  menu.style.left = e.clientX + 'px';
+  document.body.appendChild(menu);
+  _ctxMenu = menu;
+  // Close on any outside click
+  setTimeout(() => document.addEventListener('click', _closeFolderMenu, { once: true }), 0);
+}
+
+function promptNewFolder() {
+  const path = prompt('New folder path (e.g. emea/staging):');
+  if (!path || !path.trim()) return;
+  _createFolder(path.trim());
+}
+
+function _promptNewSubfolder(parentPath) {
+  _closeFolderMenu();
+  const name = prompt('New subfolder name inside "' + parentPath + '":');
+  if (!name || !name.trim()) return;
+  _createFolder(parentPath + '/' + name.trim());
+}
+
+function _createFolder(path) {
+  fetch('/api/folders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { toast('Error: ' + data.error); return; }
+      toast('Created: ' + data.path);
+      refreshTemplates();
+    })
+    .catch(err => toast('Failed: ' + err.message));
+}
+
+function _promptRenameFolder(dirPath) {
+  _closeFolderMenu();
+  const parts = dirPath.split('/');
+  const current = parts[parts.length - 1];
+  const newName = prompt('Rename "' + current + '" to:', current);
+  if (!newName || !newName.trim() || newName.trim() === current) return;
+  const newPath = parts.slice(0, -1).concat(newName.trim()).join('/');
+  fetch('/api/folders/' + dirPath.split('/').map(encodeURIComponent).join('/'), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_path: newPath }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { toast('Error: ' + data.error); return; }
+      // If the active template was inside the renamed folder, update it
+      if (currentTemplate && currentTemplate.startsWith(dirPath + '/')) {
+        currentTemplate = data.new_path + currentTemplate.slice(dirPath.length);
+        setBadge(currentTemplate);
+        document.getElementById('tmpl-name').value = currentTemplate;
+      }
+      toast('Renamed to: ' + data.new_path);
+      refreshTemplates();
+    })
+    .catch(err => toast('Failed: ' + err.message));
+}
+
+function _confirmDeleteFolder(dirPath) {
+  _closeFolderMenu();
+  const confirmed = confirm('Delete folder "' + dirPath + '" and ALL its contents?');
+  if (!confirmed) return;
+  fetch('/api/folders/' + dirPath.split('/').map(encodeURIComponent).join('/') + '?recursive=true', {
+    method: 'DELETE',
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { toast('Error: ' + data.error); return; }
+      if (currentTemplate && currentTemplate.startsWith(dirPath + '/')) {
+        currentTemplate = null;
+        setBadge('(unsaved)');
+        document.getElementById('tmpl-name').value = '';
+        document.getElementById('raw-editor').value = '';
+        document.getElementById('btn-delete').style.display = 'none';
+      }
+      toast('Deleted: ' + dirPath);
+      refreshTemplates();
+    })
+    .catch(err => toast('Failed: ' + err.message));
 }
 
 // ── Execution ────────────────────────────────────────────────────────────────

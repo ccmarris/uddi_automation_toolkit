@@ -92,6 +92,7 @@ import configparser
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 
@@ -194,13 +195,21 @@ def list_templates():
         entries = []
         for dirpath, dirnames, filenames in os.walk(TEMPLATES_DIR):
             dirnames.sort()
+            rel_dir = os.path.relpath(dirpath, TEMPLATES_DIR)
+            # Emit an entry for every subdirectory (even empty ones) so the
+            # UI can show freshly-created folders before any templates exist.
+            if rel_dir != '.':
+                entries.append({
+                    'name': rel_dir.replace(os.sep, '/'),
+                    'type': 'dir',
+                })
             for fname in sorted(filenames):
                 if fname.endswith(('.yaml', '.yml')):
                     fpath = os.path.join(dirpath, fname)
                     rel = os.path.relpath(fpath, TEMPLATES_DIR)
-                    # Always use forward slashes in the API response
                     entries.append({
                         'name':     rel.replace(os.sep, '/'),
+                        'type':     'file',
                         'modified': os.path.getmtime(fpath),
                     })
         return jsonify(entries)
@@ -275,6 +284,104 @@ def delete_template(name: str):
         return jsonify({'name': rel.replace(os.sep, '/'), 'deleted': True})
     except OSError as exc:
         logger.error('Failed to delete template %s: %s', rel, exc)
+        return jsonify({'error': str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Routes — folder management
+# ---------------------------------------------------------------------------
+
+@app.route('/api/folders', methods=['POST'])
+def create_folder():
+    '''Create a new directory under the templates root.'''
+    data = request.get_json(silent=True)
+    if not data or not data.get('path'):
+        return jsonify({'error': 'Request body must include "path"'}), 400
+    try:
+        rel = safe_template_path(data['path'].rstrip('/') + '/_check')
+        # safe_template_path validates the path; strip the dummy filename
+        rel_dir = os.path.dirname(rel)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    dpath = os.path.join(TEMPLATES_DIR, rel_dir)
+    if os.path.exists(dpath):
+        return jsonify({'error': f'Folder already exists: {rel_dir}'}), 409
+    try:
+        os.makedirs(dpath)
+        logger.info('Created folder: %s', dpath)
+        return jsonify({'path': rel_dir.replace(os.sep, '/'), 'created': True})
+    except OSError as exc:
+        logger.error('Failed to create folder %s: %s', rel_dir, exc)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/folders/<path:name>', methods=['PATCH'])
+def rename_folder(name: str):
+    '''Rename (or move) a directory within the templates root.'''
+    data = request.get_json(silent=True)
+    if not data or not data.get('new_path'):
+        return jsonify({'error': 'Request body must include "new_path"'}), 400
+    try:
+        rel_src = safe_template_path(name.rstrip('/') + '/_check')
+        rel_src = os.path.dirname(rel_src)
+        rel_dst = safe_template_path(data['new_path'].rstrip('/') + '/_check')
+        rel_dst = os.path.dirname(rel_dst)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    src = os.path.join(TEMPLATES_DIR, rel_src)
+    dst = os.path.join(TEMPLATES_DIR, rel_dst)
+    if not os.path.isdir(src):
+        return jsonify({'error': f'Folder not found: {rel_src}'}), 404
+    if os.path.exists(dst):
+        return jsonify({'error': f'Destination already exists: {rel_dst}'}), 409
+    try:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.move(src, dst)
+        logger.info('Renamed folder %s -> %s', src, dst)
+        return jsonify({
+            'old_path': rel_src.replace(os.sep, '/'),
+            'new_path': rel_dst.replace(os.sep, '/'),
+            'renamed': True,
+        })
+    except OSError as exc:
+        logger.error('Failed to rename folder %s: %s', rel_src, exc)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/folders/<path:name>', methods=['DELETE'])
+def delete_folder(name: str):
+    '''
+    Delete a directory.  Query param ?recursive=true required for
+    non-empty directories to prevent accidental data loss.
+    '''
+    try:
+        rel = safe_template_path(name.rstrip('/') + '/_check')
+        rel_dir = os.path.dirname(rel)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    dpath = os.path.join(TEMPLATES_DIR, rel_dir)
+    if not os.path.isdir(dpath):
+        return jsonify({'error': f'Folder not found: {rel_dir}'}), 404
+
+    recursive = request.args.get('recursive', '').lower() == 'true'
+    contents = []
+    for _, _, files in os.walk(dpath):
+        contents.extend(files)
+
+    if contents and not recursive:
+        return jsonify({
+            'error': f'Folder is not empty ({len(contents)} file(s)). '
+                     'Pass ?recursive=true to delete with all contents.',
+        }), 409
+    try:
+        shutil.rmtree(dpath)
+        logger.info('Deleted folder: %s', dpath)
+        return jsonify({'path': rel_dir.replace(os.sep, '/'), 'deleted': True})
+    except OSError as exc:
+        logger.error('Failed to delete folder %s: %s', rel_dir, exc)
         return jsonify({'error': str(exc)}), 500
 
 

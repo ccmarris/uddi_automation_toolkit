@@ -122,6 +122,27 @@ header .spacer { flex: 1; }
 .tmpl-folder-children .tmpl-folder { padding-left: 28px; }
 .tmpl-folder-children .tmpl-folder-children .tmpl-item { padding-left: 52px; }
 .tmpl-folder-children.collapsed { display: none; }
+.tmpl-folder-menu-btn {
+  display: none; margin-left: auto; padding: 1px 5px;
+  background: transparent; border: none; color: rgba(255,255,255,0.4);
+  cursor: pointer; font-size: 14px; line-height: 1; border-radius: 3px;
+}
+.tmpl-folder:hover .tmpl-folder-menu-btn { display: block; }
+.tmpl-folder-menu-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+.folder-ctx-menu {
+  position: fixed; z-index: 999;
+  background: var(--ibx-black); border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius); padding: 4px 0; min-width: 130px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+.folder-ctx-menu button {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 14px; background: none; border: none;
+  color: rgba(255,255,255,0.8); font-size: 13px; cursor: pointer;
+  font-family: inherit;
+}
+.folder-ctx-menu button:hover { background: rgba(255,255,255,0.08); }
+.folder-ctx-menu button.danger { color: var(--ibx-danger); }
 .sidebar-actions {
   padding: 10px 12px; display: flex; gap: 6px;
   border-top: 1px solid rgba(255,255,255,0.08);
@@ -509,7 +530,8 @@ input[type="text"]::placeholder { color: #b0b8c0; }
     <div class="tmpl-list" id="tmpl-list"></div>
     <div class="sidebar-actions">
       <button class="primary" onclick="newTemplate()">+ New</button>
-      <button onclick="refreshTemplates()">↺</button>
+      <button onclick="promptNewFolder()" title="New folder">+ Folder</button>
+      <button onclick="refreshTemplates()" title="Refresh">↺</button>
     </div>
   </div>
 
