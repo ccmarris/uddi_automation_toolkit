@@ -116,36 +116,49 @@ app = Flask(
 # Security helper
 # ---------------------------------------------------------------------------
 
-def safe_template_name(name: str) -> str:
+def safe_template_path(name: str) -> str:
     '''
-    Sanitise a template name to prevent path traversal.
+    Sanitise a template path to prevent directory traversal.
+
+    Allows forward-slash-separated subdirectory paths
+    (e.g. 'emea/london.yaml') but rejects any component that is '..'
+    or that would escape the templates root after joining.
 
     Args:
-        name: Raw name from URL segment (e.g. 'site-london.yaml')
+        name: Raw relative path from the URL (e.g. 'emea/london.yaml')
 
     Returns:
-        Basename only, with any directory components stripped
+        Normalised relative path using os.sep
 
     Raises:
-        ValueError if the resulting name contains '..' or is empty
+        ValueError on empty input, '..' components, or traversal attempts
     '''
-    safe = os.path.basename(name)
-    if not safe or '..' in safe:
-        raise ValueError(f'Invalid template name: {name!r}')
-    return safe
+    if not name:
+        raise ValueError('Template path is empty')
+    parts = name.replace('\\', '/').split('/')
+    for part in parts:
+        if part in ('', '.', '..'):
+            raise ValueError(f'Invalid path component in template name: {name!r}')
+    rel = os.path.join(*parts)
+    # Double-check resolved path stays inside TEMPLATES_DIR
+    resolved = os.path.realpath(os.path.join(TEMPLATES_DIR, rel))
+    root = os.path.realpath(TEMPLATES_DIR)
+    if not resolved.startswith(root + os.sep) and resolved != root:
+        raise ValueError(f'Template path escapes templates directory: {name!r}')
+    return rel
 
 
-def template_path(name: str) -> str:
+def template_path(rel: str) -> str:
     '''
-    Resolve the filesystem path for a template name.
+    Resolve the filesystem path for a sanitised relative template path.
 
     Args:
-        name: Safe template filename (already sanitised)
+        rel: Sanitised relative path (already validated by safe_template_path)
 
     Returns:
         Absolute path within the templates directory
     '''
-    return os.path.join(TEMPLATES_DIR, name)
+    return os.path.join(TEMPLATES_DIR, rel)
 
 
 # ---------------------------------------------------------------------------
@@ -170,17 +183,26 @@ def template_builder():
 
 @app.route('/api/templates', methods=['GET'])
 def list_templates():
-    '''List all YAML templates in the templates directory.'''
+    '''
+    List all YAML templates under the templates directory tree.
+
+    Returns a flat list of entries, each with a forward-slash-separated
+    relative path (e.g. "emea/london.yaml") as the name so the client
+    can reconstruct the folder hierarchy.
+    '''
     try:
         entries = []
-        for fname in sorted(os.listdir(TEMPLATES_DIR)):
-            if fname.endswith(('.yaml', '.yml')):
-                fpath = os.path.join(TEMPLATES_DIR, fname)
-                entries.append({
-                    'name':     fname,
-                    'path':     fpath,
-                    'modified': os.path.getmtime(fpath),
-                })
+        for dirpath, dirnames, filenames in os.walk(TEMPLATES_DIR):
+            dirnames.sort()
+            for fname in sorted(filenames):
+                if fname.endswith(('.yaml', '.yml')):
+                    fpath = os.path.join(dirpath, fname)
+                    rel = os.path.relpath(fpath, TEMPLATES_DIR)
+                    # Always use forward slashes in the API response
+                    entries.append({
+                        'name':     rel.replace(os.sep, '/'),
+                        'modified': os.path.getmtime(fpath),
+                    })
         return jsonify(entries)
     except OSError as exc:
         logger.error('Failed to list templates: %s', exc)
@@ -191,18 +213,18 @@ def list_templates():
 def get_template(name: str):
     '''Return the raw YAML content of a template.'''
     try:
-        safe = safe_template_name(name)
+        rel = safe_template_path(name)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
-    fpath = template_path(safe)
+    fpath = template_path(rel)
     if not os.path.isfile(fpath):
-        return jsonify({'error': f'Template not found: {safe}'}), 404
+        return jsonify({'error': f'Template not found: {rel}'}), 404
 
     try:
         with open(fpath, 'r') as fh:
             content = fh.read()
-        return jsonify({'name': safe, 'content': content})
+        return jsonify({'name': rel.replace(os.sep, '/'), 'content': content})
     except OSError as exc:
         return jsonify({'error': str(exc)}), 500
 
@@ -211,7 +233,7 @@ def get_template(name: str):
 def save_template(name: str):
     '''Create or overwrite a template with the provided YAML content.'''
     try:
-        safe = safe_template_name(name)
+        rel = safe_template_path(name)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
@@ -219,14 +241,15 @@ def save_template(name: str):
     if not data or 'content' not in data:
         return jsonify({'error': 'Request body must be JSON with a "content" field'}), 400
 
-    fpath = template_path(safe)
+    fpath = template_path(rel)
     try:
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
         with open(fpath, 'w') as fh:
             fh.write(data['content'])
         logger.info('Saved template: %s', fpath)
-        return jsonify({'name': safe, 'saved': True})
+        return jsonify({'name': rel.replace(os.sep, '/'), 'saved': True})
     except OSError as exc:
-        logger.error('Failed to save template %s: %s', safe, exc)
+        logger.error('Failed to save template %s: %s', rel, exc)
         return jsonify({'error': str(exc)}), 500
 
 
@@ -234,20 +257,24 @@ def save_template(name: str):
 def delete_template(name: str):
     '''Delete a template file.'''
     try:
-        safe = safe_template_name(name)
+        rel = safe_template_path(name)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
-    fpath = template_path(safe)
+    fpath = template_path(rel)
     if not os.path.isfile(fpath):
-        return jsonify({'error': f'Template not found: {safe}'}), 404
+        return jsonify({'error': f'Template not found: {rel}'}), 404
 
     try:
         os.remove(fpath)
         logger.info('Deleted template: %s', fpath)
-        return jsonify({'name': safe, 'deleted': True})
+        # Remove the parent directory if it is now empty
+        parent = os.path.dirname(fpath)
+        if parent != TEMPLATES_DIR and not os.listdir(parent):
+            os.rmdir(parent)
+        return jsonify({'name': rel.replace(os.sep, '/'), 'deleted': True})
     except OSError as exc:
-        logger.error('Failed to delete template %s: %s', safe, exc)
+        logger.error('Failed to delete template %s: %s', rel, exc)
         return jsonify({'error': str(exc)}), 500
 
 
@@ -318,11 +345,11 @@ def provision():
     verbose = data.get('verbose', True)
 
     try:
-        safe = safe_template_name(template_name)
+        rel = safe_template_path(template_name)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
-    tmpl_path = template_path(safe)
+    tmpl_path = template_path(rel)
     if not os.path.isfile(tmpl_path):
         return jsonify({'error': f'Template not found: {safe}'}), 404
 
@@ -363,11 +390,11 @@ def decommission():
     verbose = data.get('verbose', True)
 
     try:
-        safe = safe_template_name(template_name)
+        rel = safe_template_path(template_name)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
-    tmpl_path = template_path(safe)
+    tmpl_path = template_path(rel)
     if not os.path.isfile(tmpl_path):
         return jsonify({'error': f'Template not found: {safe}'}), 404
 
@@ -407,11 +434,11 @@ def query():
     json_output = data.get('json_output', False)
 
     try:
-        safe = safe_template_name(template_name)
+        rel = safe_template_path(template_name)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
-    tmpl_path = template_path(safe)
+    tmpl_path = template_path(rel)
     if not os.path.isfile(tmpl_path):
         return jsonify({'error': f'Template not found: {safe}'}), 404
 
@@ -441,11 +468,11 @@ def query_json():
     template_name = data.get('template', '')
 
     try:
-        safe = safe_template_name(template_name)
+        rel = safe_template_path(template_name)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
-    tmpl_path = template_path(safe)
+    tmpl_path = template_path(rel)
     if not os.path.isfile(tmpl_path):
         return jsonify({'error': f'Template not found: {safe}'}), 404
 

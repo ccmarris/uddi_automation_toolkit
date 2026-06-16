@@ -70,54 +70,132 @@ function switchTab(tab) {
 
 // ── Template list (sidebar) ──────────────────────────────────────────────────
 
+// Track which folders are collapsed: Set of folder paths (e.g. 'emea')
+const collapsedFolders = new Set();
+
 function refreshTemplates() {
   fetch('/api/templates')
     .then(r => r.json())
-    .then(list => renderTemplateList(list))
+    .then(list => renderTemplateTree(list))
     .catch(err => toast('Failed to load templates: ' + err.message));
 }
 
-function renderTemplateList(list) {
+function _buildTree(list) {
+  // Convert flat [{name:'a/b/c.yaml',...}] into nested {dirs:{}, files:[]}
+  const root = { dirs: {}, files: [] };
+  list.forEach(tmpl => {
+    const parts = tmpl.name.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const dir = parts[i];
+      if (!node.dirs[dir]) node.dirs[dir] = { dirs: {}, files: [] };
+      node = node.dirs[dir];
+    }
+    node.files.push(tmpl);
+  });
+  return root;
+}
+
+function renderTemplateTree(list) {
   const container = document.getElementById('tmpl-list');
   container.innerHTML = '';
-  if (!list.length) {
+  if (!list || list.error || !list.length) {
     container.innerHTML = '<div style="padding:14px 16px;font-size:12px;color:rgba(255,255,255,0.3)">No templates found</div>';
     return;
   }
-  list.forEach(tmpl => {
+  const tree = _buildTree(list);
+  _renderNode(container, tree, '');
+}
+
+function _renderNode(container, node, pathPrefix) {
+  // Render subdirectories first, then files at this level
+  Object.keys(node.dirs).sort().forEach(dirName => {
+    const dirPath = pathPrefix ? pathPrefix + '/' + dirName : dirName;
+    const collapsed = collapsedFolders.has(dirPath);
+
+    // Folder row
+    const folderEl = document.createElement('div');
+    folderEl.className = 'tmpl-folder';
+    folderEl.dataset.path = dirPath;
+    folderEl.innerHTML =
+      '<span class="tmpl-folder-arrow">' + (collapsed ? '▶' : '▼') + '</span>' +
+      '<span class="tmpl-folder-name">' + dirName + '</span>';
+    folderEl.onclick = () => _toggleFolder(dirPath);
+    container.appendChild(folderEl);
+
+    // Folder children container
+    const childEl = document.createElement('div');
+    childEl.className = 'tmpl-folder-children' + (collapsed ? ' collapsed' : '');
+    childEl.dataset.folderPath = dirPath;
+    _renderNode(childEl, node.dirs[dirName], dirPath);
+    container.appendChild(childEl);
+  });
+
+  // Files at this level
+  node.files.forEach(tmpl => {
+    const label = tmpl.name.split('/').pop();  // basename only
     const el = document.createElement('div');
     el.className = 'tmpl-item' + (tmpl.name === currentTemplate ? ' active' : '');
-    el.textContent = tmpl.name;
+    el.textContent = label;
     el.title = tmpl.name;
+    el.dataset.tmplName = tmpl.name;
     el.onclick = () => loadTemplate(tmpl.name);
     container.appendChild(el);
+  });
+}
+
+function _toggleFolder(dirPath) {
+  if (collapsedFolders.has(dirPath)) {
+    collapsedFolders.delete(dirPath);
+  } else {
+    collapsedFolders.add(dirPath);
+  }
+  // Update arrow and visibility without a full re-fetch
+  document.querySelectorAll('.tmpl-folder').forEach(el => {
+    if (el.dataset.path === dirPath) {
+      const collapsed = collapsedFolders.has(dirPath);
+      el.querySelector('.tmpl-folder-arrow').textContent = collapsed ? '▶' : '▼';
+    }
+  });
+  document.querySelectorAll('.tmpl-folder-children').forEach(el => {
+    if (el.dataset.folderPath === dirPath) {
+      el.classList.toggle('collapsed', collapsedFolders.has(dirPath));
+    }
+  });
+}
+
+function _templateApiPath(name) {
+  // Encode each path segment separately so '/' is preserved in the URL
+  return '/api/templates/' + name.split('/').map(encodeURIComponent).join('/');
+}
+
+function _markActive(name) {
+  document.querySelectorAll('.tmpl-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.tmplName === name);
   });
 }
 
 // ── Template CRUD ────────────────────────────────────────────────────────────
 
 function loadTemplate(name) {
-  fetch('/api/templates/' + encodeURIComponent(name))
+  fetch(_templateApiPath(name))
     .then(r => r.json())
     .then(data => {
-      // Load content into Raw YAML tab and switch to it
+      if (data.error) { toast('Error: ' + data.error); return; }
       const raw = document.getElementById('raw-editor');
       raw.value = data.content;
       raw.dataset.fromBuilder = 'false';
       document.getElementById('tmpl-name').value = data.name;
       document.getElementById('btn-delete').style.display = '';
-      currentTemplate = name;
-      setBadge(name);
-      document.querySelectorAll('.tmpl-item').forEach(el => {
-        el.classList.toggle('active', el.textContent === name);
-      });
+      currentTemplate = data.name;
+      setBadge(data.name);
+      _markActive(data.name);
       switchTab('yaml');
     })
     .catch(err => toast('Failed to load: ' + err.message));
 }
 
 function newTemplate() {
-  // Clear builder and switch to Builder tab for a fresh start
   clearBuilder();
   seedBuilder();
   builderUpdate();
@@ -125,7 +203,7 @@ function newTemplate() {
   setBadge('(unsaved)');
   document.getElementById('tmpl-name').value = '';
   document.getElementById('btn-delete').style.display = 'none';
-  document.querySelectorAll('.tmpl-item').forEach(el => el.classList.remove('active'));
+  _markActive(null);
   const raw = document.getElementById('raw-editor');
   raw.value = '';
   raw.dataset.fromBuilder = 'true';
@@ -149,7 +227,7 @@ function builderSave() {
 function builderSaveAs() {
   const site = v('site-name').trim();
   const suggestion = currentTemplate || (site ? site + '.yaml' : 'site-new.yaml');
-  const name = prompt('Save template as:', suggestion);
+  const name = prompt('Save template as (use folder/name.yaml for subdirectories):', suggestion);
   if (!name) return;
   const finalName = name.endsWith('.yaml') || name.endsWith('.yml') ? name : name + '.yaml';
   document.getElementById('tmpl-name').value = finalName;
@@ -158,10 +236,11 @@ function builderSaveAs() {
 
 function _saveContent(name, content) {
   if (!name) { toast('Enter a template filename first'); return; }
-  if (!name.endsWith('.yaml') && !name.endsWith('.yml')) {
+  const base = name.split('/').pop();
+  if (!base.endsWith('.yaml') && !base.endsWith('.yml')) {
     toast('Filename must end in .yaml or .yml'); return;
   }
-  fetch('/api/templates/' + encodeURIComponent(name), {
+  fetch(_templateApiPath(name), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -169,16 +248,16 @@ function _saveContent(name, content) {
     .then(r => r.json())
     .then(data => {
       if (data.error) { toast('Error: ' + data.error); return; }
-      currentTemplate = name;
-      setBadge(name);
+      currentTemplate = data.name;
+      setBadge(data.name);
+      document.getElementById('tmpl-name').value = data.name;
       document.getElementById('btn-delete').style.display = '';
-      // Keep raw-editor in sync
       const raw = document.getElementById('raw-editor');
       if (raw.dataset.fromBuilder !== 'false') {
         raw.value = content;
         raw.dataset.fromBuilder = 'true';
       }
-      toast('Saved: ' + name);
+      toast('Saved: ' + data.name);
       refreshTemplates();
     })
     .catch(err => toast('Save failed: ' + err.message));
@@ -188,7 +267,7 @@ function deleteTemplate() {
   const name = currentTemplate || document.getElementById('tmpl-name').value.trim();
   if (!name) { toast('No template selected'); return; }
   if (!confirm('Delete template "' + name + '"?')) return;
-  fetch('/api/templates/' + encodeURIComponent(name), { method: 'DELETE' })
+  fetch(_templateApiPath(name), { method: 'DELETE' })
     .then(r => r.json())
     .then(data => {
       if (data.error) { toast('Error: ' + data.error); return; }

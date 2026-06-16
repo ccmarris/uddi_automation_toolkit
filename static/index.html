@@ -96,7 +96,7 @@ header .spacer { flex: 1; }
 }
 .tmpl-list { flex: 1; overflow-y: auto; padding: 4px 0; }
 .tmpl-item {
-  padding: 9px 16px; font-size: 13px; color: rgba(255,255,255,0.75);
+  padding: 8px 16px 8px 28px; font-size: 13px; color: rgba(255,255,255,0.75);
   cursor: pointer; border-left: 3px solid transparent;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: background 0.1s;
@@ -107,6 +107,21 @@ header .spacer { flex: 1; }
   border-left-color: var(--ibx-green);
   color: #fff; font-weight: 700;
 }
+.tmpl-folder {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 16px 7px 14px; font-size: 12px;
+  font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: rgba(255,255,255,0.5); cursor: pointer;
+  user-select: none; transition: background 0.1s;
+}
+.tmpl-folder:hover { background: rgba(255,255,255,0.05); }
+.tmpl-folder-arrow { font-size: 9px; flex-shrink: 0; color: rgba(255,255,255,0.35); }
+.tmpl-folder-name  { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tmpl-folder-children { padding-left: 0; }
+.tmpl-folder-children .tmpl-item { padding-left: 36px; }
+.tmpl-folder-children .tmpl-folder { padding-left: 28px; }
+.tmpl-folder-children .tmpl-folder-children .tmpl-item { padding-left: 52px; }
+.tmpl-folder-children.collapsed { display: none; }
 .sidebar-actions {
   padding: 10px 12px; display: flex; gap: 6px;
   border-top: 1px solid rgba(255,255,255,0.08);
