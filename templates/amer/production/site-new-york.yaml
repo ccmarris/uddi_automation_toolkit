@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# Site template: New York (AMER Production)
+# ---------------------------------------------------------------------------
+site:
+  name:        new-york
+  region:      AMER
+  environment: production
+  location:    "New York, US"
+
+network:
+  subnet_size: 24
+  subnets:
+    - name:    new-york-mgmt
+      purpose: mgmt
+      dhcp:    false
+      cidr:    24
+
+    - name:    new-york-lan
+      purpose: user-lan
+      dhcp:    true
+      dhcp_start: 10
+      dhcp_end:   250
+      cidr:    24
+
+    - name:    new-york-server
+      purpose: server
+      dhcp:    false
+      cidr:    24
+
+    - name:    new-york-dmz
+      purpose: dmz
+      dhcp:    false
+      cidr:    24
+
+    - name:    new-york-voice
+      purpose: voice
+      dhcp:    true
+      dhcp_start: 10
+      dhcp_end:   200
+      cidr:    24
+
+dns:
+  create_zone:         true
+  create_reverse_zone: true
+
+hosts:
+  - hostname: gw01
+    subnet:   new-york-mgmt
+    comment:  "Site gateway"
+
+  - hostname: dns01
+    subnet:   new-york-server
+    comment:  "Site DNS"
+
+  - hostname: mon01
+    subnet:   new-york-mgmt
+    comment:  "Site monitoring"
+
+  - hostname: pbx01
+    subnet:   new-york-voice
+    comment:  "Site PBX"
+
+tags:
+  Owner:      network-team
+  CostCentre: CC-AMER-001

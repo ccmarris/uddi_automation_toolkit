@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Site template: AMER Lab 01 (non-production)
+# ---------------------------------------------------------------------------
+site:
+  name:        amer-lab01
+  region:      AMER
+  environment: lab
+  location:    "Dallas, US"
+
+network:
+  subnet_size: 24
+  subnets:
+    - name:    amer-lab01-mgmt
+      purpose: mgmt
+      dhcp:    true
+      dhcp_start: 10
+      dhcp_end:   50
+      cidr:    24
+
+    - name:    amer-lab01-server
+      purpose: server
+      dhcp:    false
+      cidr:    24
+
+dns:
+  create_zone: true
+
+hosts:
+  - hostname: gw01
+    subnet:   amer-lab01-mgmt
+    comment:  "Lab gateway"
+
+tags:
+  Owner:      lab-team
+  CostCentre: CC-AMER-LAB

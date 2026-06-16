@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Site template: Sydney (APAC Production)
+# ---------------------------------------------------------------------------
+site:
+  name:        sydney
+  region:      APAC
+  environment: production
+  location:    "Sydney, AU"
+
+network:
+  subnet_size: 24
+  subnets:
+    - name:    sydney-mgmt
+      purpose: mgmt
+      dhcp:    false
+      cidr:    24
+
+    - name:    sydney-lan
+      purpose: user-lan
+      dhcp:    true
+      dhcp_start: 10
+      dhcp_end:   250
+      cidr:    24
+
+    - name:    sydney-server
+      purpose: server
+      dhcp:    false
+      cidr:    24
+
+dns:
+  create_zone:         true
+  create_reverse_zone: true
+
+hosts:
+  - hostname: gw01
+    subnet:   sydney-mgmt
+    comment:  "Site gateway"
+
+  - hostname: dns01
+    subnet:   sydney-server
+    comment:  "Site DNS"
+
+tags:
+  Owner:      network-team
+  CostCentre: CC-APAC-002

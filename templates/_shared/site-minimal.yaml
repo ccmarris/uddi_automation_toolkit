@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------------------
+# Minimal template — mandatory fields only
+# ---------------------------------------------------------------------------
+# ip_space, dns.parent, dns.view, subnet_size, and owner all fall back
+# to the INI configuration file [DEFAULTS] section.
+#
+# Usage: copy to the appropriate region/environment folder and fill in
+# the site-specific values.
+# ---------------------------------------------------------------------------
+
+site:
+  name:        changeme
+  region:      EMEA       # EMEA | AMER | APAC
+  environment: production # production | lab
+  location:    ""
+
+# dns:
+#   create_zone: true
+#   create_reverse_zone: false

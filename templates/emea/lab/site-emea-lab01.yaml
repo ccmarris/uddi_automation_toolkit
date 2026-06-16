@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Site template: EMEA Lab 01 (non-production)
+# ---------------------------------------------------------------------------
+site:
+  name:        emea-lab01
+  region:      EMEA
+  environment: lab
+  location:    "Amsterdam, NL"
+
+network:
+  subnet_size: 24
+  subnets:
+    - name:    emea-lab01-mgmt
+      purpose: mgmt
+      dhcp:    true
+      dhcp_start: 10
+      dhcp_end:   50
+      cidr:    24
+
+    - name:    emea-lab01-server
+      purpose: server
+      dhcp:    false
+      cidr:    24
+
+dns:
+  create_zone: true
+
+hosts:
+  - hostname: gw01
+    subnet:   emea-lab01-mgmt
+    comment:  "Lab gateway"
+
+tags:
+  Owner:      lab-team
+  CostCentre: CC-EMEA-LAB

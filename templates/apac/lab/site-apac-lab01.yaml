@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Site template: APAC Lab 01 (non-production)
+# ---------------------------------------------------------------------------
+site:
+  name:        apac-lab01
+  region:      APAC
+  environment: lab
+  location:    "Tokyo, JP"
+
+network:
+  subnet_size: 24
+  subnets:
+    - name:    apac-lab01-mgmt
+      purpose: mgmt
+      dhcp:    true
+      dhcp_start: 10
+      dhcp_end:   50
+      cidr:    24
+
+    - name:    apac-lab01-server
+      purpose: server
+      dhcp:    false
+      cidr:    24
+
+dns:
+  create_zone: true
+
+hosts:
+  - hostname: gw01
+    subnet:   apac-lab01-mgmt
+    comment:  "Lab gateway"
+
+tags:
+  Owner:      lab-team
+  CostCentre: CC-APAC-LAB

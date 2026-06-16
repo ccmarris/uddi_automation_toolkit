@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# Standard 4-subnet template — mgmt / user-lan / server / dmz
+# ---------------------------------------------------------------------------
+# Copy to the appropriate region/environment folder and customise.
+# Replace all occurrences of SITENAME with the actual site short name.
+# ---------------------------------------------------------------------------
+
+site:
+  name:        SITENAME
+  region:      EMEA       # EMEA | AMER | APAC
+  environment: production
+  location:    ""
+
+network:
+  subnet_size: 24
+  subnets:
+    - name:    SITENAME-mgmt
+      purpose: mgmt
+      dhcp:    false
+      cidr:    24
+
+    - name:    SITENAME-lan
+      purpose: user-lan
+      dhcp:    true
+      dhcp_start: 10
+      dhcp_end:   250
+      cidr:    24
+
+    - name:    SITENAME-server
+      purpose: server
+      dhcp:    false
+      cidr:    24
+
+    - name:    SITENAME-dmz
+      purpose: dmz
+      dhcp:    false
+      cidr:    24
+
+dns:
+  create_zone:         true
+  create_reverse_zone: true
+
+hosts:
+  - hostname: gw01
+    subnet:   SITENAME-mgmt
+    comment:  "Site gateway"
+
+  - hostname: dns01
+    subnet:   SITENAME-server
+    comment:  "Site DNS"
+
+  - hostname: mon01
+    subnet:   SITENAME-mgmt
+    comment:  "Site monitoring"
+
+tags:
+  Owner:      network-team
+  CostCentre: CC-XXXX-000

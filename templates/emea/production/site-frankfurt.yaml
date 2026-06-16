@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Site template: Frankfurt (EMEA Production)
+# ---------------------------------------------------------------------------
+site:
+  name:        frankfurt
+  region:      EMEA
+  environment: production
+  location:    "Frankfurt, DE"
+
+network:
+  subnet_size: 24
+  subnets:
+    - name:    frankfurt-mgmt
+      purpose: mgmt
+      dhcp:    false
+      cidr:    24
+
+    - name:    frankfurt-lan
+      purpose: user-lan
+      dhcp:    true
+      dhcp_start: 10
+      dhcp_end:   250
+      cidr:    24
+
+    - name:    frankfurt-server
+      purpose: server
+      dhcp:    false
+      cidr:    24
+
+dns:
+  create_zone:         true
+  create_reverse_zone: true
+
+hosts:
+  - hostname: gw01
+    subnet:   frankfurt-mgmt
+    comment:  "Site gateway"
+
+  - hostname: dns01
+    subnet:   frankfurt-server
+    comment:  "Site DNS"
+
+tags:
+  Owner:      network-team
+  CostCentre: CC-EMEA-002

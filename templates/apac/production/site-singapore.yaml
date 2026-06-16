@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Site template: Singapore (APAC Production)
+# ---------------------------------------------------------------------------
+site:
+  name:        singapore
+  region:      APAC
+  environment: production
+  location:    "Singapore"
+
+network:
+  subnet_size: 24
+  subnets:
+    - name:    singapore-mgmt
+      purpose: mgmt
+      dhcp:    false
+      cidr:    24
+
+    - name:    singapore-lan
+      purpose: user-lan
+      dhcp:    true
+      dhcp_start: 10
+      dhcp_end:   250
+      cidr:    24
+
+    - name:    singapore-server
+      purpose: server
+      dhcp:    false
+      cidr:    24
+
+    - name:    singapore-dmz
+      purpose: dmz
+      dhcp:    false
+      cidr:    24
+
+dns:
+  create_zone:         true
+  create_reverse_zone: true
+
+hosts:
+  - hostname: gw01
+    subnet:   singapore-mgmt
+    comment:  "Site gateway"
+
+  - hostname: dns01
+    subnet:   singapore-server
+    comment:  "Site DNS"
+
+  - hostname: mon01
+    subnet:   singapore-mgmt
+    comment:  "Site monitoring"
+
+tags:
+  Owner:      network-team
+  CostCentre: CC-APAC-001
