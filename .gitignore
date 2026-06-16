@@ -32,3 +32,4 @@ env/
 
 # Logs
 *.log
+.python-version
