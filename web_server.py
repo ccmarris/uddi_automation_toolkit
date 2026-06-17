@@ -97,7 +97,7 @@ import subprocess
 import sys
 
 from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
-from uddi_utils import read_config, resolve_credentials, setup_logging
+from uddi_utils import load_yaml_template, read_config, resolve_credentials, setup_logging, validate_template
 
 logger = logging.getLogger(__name__)
 
@@ -600,6 +600,39 @@ def query_json():
         return jsonify(json.loads(proc.stdout))
     except json.JSONDecodeError:
         return jsonify({'error': 'Unexpected output from query_site.py', 'raw': proc.stdout}), 500
+
+
+# ---------------------------------------------------------------------------
+# Routes — template validation
+# ---------------------------------------------------------------------------
+
+@app.route('/api/validate', methods=['POST'])
+def validate_template_route():
+    '''
+    Validate a template's schema without contacting the API.
+
+    Request body: {"template": "<relative path>"}
+    Returns: ValidationResult dict from uddi_utils.validate_template()
+    '''
+    data = request.get_json(silent=True) or {}
+    name = data.get('template', '').strip()
+    if not name:
+        return jsonify({'error': 'template name required'}), 400
+    try:
+        rel = safe_template_path(name)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    fpath = os.path.join(TEMPLATES_DIR, rel)
+    if not os.path.isfile(fpath):
+        return jsonify({'error': f'Template not found: {name}'}), 404
+    try:
+        template = load_yaml_template(fpath)
+    except SystemExit:
+        return jsonify({'valid': False, 'template': name,
+                        'errors': [{'field': 'file', 'message': 'YAML parse error — check syntax'}],
+                        'warnings': []}), 200
+    result = validate_template(template, template_name=name)
+    return jsonify(result)
 
 
 # ---------------------------------------------------------------------------

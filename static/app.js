@@ -542,8 +542,10 @@ function updateExecControls() {
   document.getElementById('row-force').style.display        = action === 'decommission' ? '' : 'none';
   document.getElementById('row-create-zone').style.display  = action === 'provision' ? '' : 'none';
   document.getElementById('row-reverse-zone').style.display = action === 'provision' ? '' : 'none';
-  document.getElementById('row-dry-run').style.display      = action === 'query' ? 'none' : '';
-  if (action !== 'query') showTerminal();
+  document.getElementById('row-dry-run').style.display      = (action === 'query' || action === 'validate') ? 'none' : '';
+  if (action === 'query') { showQueryResults(); return; }
+  if (action === 'validate') { showValidateResults(); return; }
+  showTerminal();
 }
 
 function execute() {
@@ -562,10 +564,8 @@ function execute() {
   document.getElementById('btn-execute').style.display = 'none';
   document.getElementById('btn-stop').style.display = '';
 
-  if (action === 'query') {
-    _executeQuery(name);
-    return;
-  }
+  if (action === 'query')    { _executeQuery(name);    return; }
+  if (action === 'validate') { _executeValidate(name); return; }
 
   // Provision / decommission — SSE streaming to terminal
   showTerminal();
@@ -650,6 +650,70 @@ function _executeQuery(name) {
     });
 }
 
+function _executeValidate(name) {
+  showValidateResults();
+  document.getElementById('validate-results').innerHTML =
+    '<div style="padding:20px;text-align:center;color:var(--ibx-muted);font-size:12px">Validating…</div>';
+
+  fetch('/api/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ template: name }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      execDone();
+      if (data.error) {
+        document.getElementById('validate-results').innerHTML =
+          '<div style="padding:16px;color:var(--ibx-danger);font-size:12px">Error: ' + htmlEsc(data.error) + '</div>';
+        return;
+      }
+      renderValidateResult(data);
+    })
+    .catch(err => {
+      execDone();
+      document.getElementById('validate-results').innerHTML =
+        '<div style="padding:16px;color:var(--ibx-danger);font-size:12px">Connection error: ' + htmlEsc(err.message) + '</div>';
+    });
+}
+
+function renderValidateResult(r) {
+  const isValid = r.valid;
+  const errors   = r.errors   || [];
+  const warnings = r.warnings || [];
+
+  let html = '<div class="vr-badge-row">';
+  html += `<span class="vr-badge ${isValid ? 'ok' : 'err'}">${isValid ? '✓ Valid' : '✗ Invalid'}</span>`;
+  html += `<span class="vr-tmpl-name">${htmlEsc(r.template || '')}</span>`;
+  html += '</div>';
+
+  if (errors.length) {
+    html += `<div class="vr-section-label">Errors (${errors.length})</div>`;
+    errors.forEach(e => {
+      html += `<div class="vr-item vr-error">
+        <span class="vr-field">${htmlEsc(e.field)}</span>
+        <span class="vr-msg">${htmlEsc(e.message)}</span>
+      </div>`;
+    });
+  }
+
+  if (warnings.length) {
+    html += `<div class="vr-section-label">Warnings (${warnings.length})</div>`;
+    warnings.forEach(w => {
+      html += `<div class="vr-item vr-warning">
+        <span class="vr-field">${htmlEsc(w.field)}</span>
+        <span class="vr-msg">${htmlEsc(w.message)}</span>
+      </div>`;
+    });
+  }
+
+  if (!errors.length && !warnings.length) {
+    html += '<div class="vr-empty">No issues found.</div>';
+  }
+
+  document.getElementById('validate-results').innerHTML = html;
+}
+
 function renderQueryResult(r) {
   const site = r.site || '(unknown)';
   let html = '';
@@ -727,18 +791,28 @@ function renderQueryResult(r) {
 }
 
 function showTerminal() {
-  document.getElementById('output-tabs').style.display = '';
-  document.getElementById('output-area').style.display = '';
-  document.getElementById('query-results').style.display = 'none';
+  document.getElementById('output-tabs').style.display    = '';
+  document.getElementById('output-area').style.display    = '';
+  document.getElementById('query-results').style.display  = 'none';
+  document.getElementById('validate-results').style.display = 'none';
   document.getElementById('btn-copy-output').style.display = '';
   switchOutputTab(_outputTab);
 }
 
 function showQueryResults() {
-  document.getElementById('output-tabs').style.display = 'none';
-  document.getElementById('output-area').style.display = 'none';
-  document.getElementById('query-results').style.display = '';
-  document.getElementById('btn-copy-output').style.display = 'none';
+  document.getElementById('output-tabs').style.display      = 'none';
+  document.getElementById('output-area').style.display      = 'none';
+  document.getElementById('query-results').style.display    = '';
+  document.getElementById('validate-results').style.display = 'none';
+  document.getElementById('btn-copy-output').style.display  = 'none';
+}
+
+function showValidateResults() {
+  document.getElementById('output-tabs').style.display      = 'none';
+  document.getElementById('output-area').style.display      = 'none';
+  document.getElementById('query-results').style.display    = 'none';
+  document.getElementById('validate-results').style.display = '';
+  document.getElementById('btn-copy-output').style.display  = 'none';
 }
 
 function renderLine(text) {
@@ -778,6 +852,7 @@ function clearOutput() {
   document.getElementById('output').innerHTML = '';
   document.getElementById('output-clean-area').innerHTML = '';
   document.getElementById('query-results').innerHTML = '';
+  document.getElementById('validate-results').innerHTML = '';
   showTerminal();
 }
 

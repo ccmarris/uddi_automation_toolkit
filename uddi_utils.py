@@ -53,7 +53,7 @@
 
 ------------------------------------------------------------------------
 '''
-__version__ = '1.1.0'
+__version__ = '1.2.0'
 __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
@@ -259,3 +259,162 @@ def reverse_zone_fqdn(address: str, cidr: int) -> str:
     else:
         relevant = octets[:3]
     return '.'.join(reversed(relevant)) + '.in-addr.arpa'
+
+
+# ---------------------------------------------------------------------------
+# Template validation
+# ---------------------------------------------------------------------------
+
+def validate_template(template: dict, template_name: str = '') -> dict:
+    '''
+    Validate a parsed YAML site template against the expected schema.
+
+    Checks required fields, value types, CIDR ranges, and cross-field
+    references (e.g. host subnet references a defined subnet name).
+    Does not contact the API — purely structural validation.
+
+    Args:
+        template:      Parsed YAML dict (from load_yaml_template or {})
+        template_name: Optional filename for the result metadata
+
+    Returns:
+        Dict with keys:
+            valid     -- True if no errors found
+            template  -- template_name echoed back
+            errors    -- list of {field, message} dicts (schema violations)
+            warnings  -- list of {field, message} dicts (missing optionals)
+    '''
+    errors: list[dict] = []
+    warnings: list[dict] = []
+
+    def _err(field: str, msg: str) -> None:
+        errors.append({'field': field, 'message': msg})
+
+    def _warn(field: str, msg: str) -> None:
+        warnings.append({'field': field, 'message': msg})
+
+    # ── site ──
+    site = template.get('site') or {}
+    if not isinstance(site, dict):
+        _err('site', 'Must be a mapping')
+        site = {}
+
+    name = str(site.get('name', '')).strip()
+    if not name:
+        _err('site.name', 'Required and must be non-empty')
+    elif ' ' in name:
+        _warn('site.name', 'Contains spaces — consider hyphens for DNS compatibility')
+
+    if not site.get('region'):
+        _warn('site.region', 'Not specified — useful for block-selection filtering')
+    if not site.get('environment'):
+        _warn('site.environment', 'Not specified')
+
+    # ── network ──
+    net = template.get('network') or {}
+    if net and not isinstance(net, dict):
+        _err('network', 'Must be a mapping')
+        net = {}
+
+    if not net.get('ip_space'):
+        _warn('network.ip_space',
+              'Not set — falls back to INI [DEFAULTS] ip_space; runtime error if missing there too')
+
+    subnet_size = net.get('subnet_size')
+    if subnet_size is not None:
+        try:
+            sz = int(subnet_size)
+            if not 8 <= sz <= 30:
+                _err('network.subnet_size', f'CIDR prefix {sz} is outside valid range 8–30')
+        except (TypeError, ValueError):
+            _err('network.subnet_size', f'Must be an integer, got {subnet_size!r}')
+
+    subnet_names: set[str] = set()
+    subnets = net.get('subnets') or []
+    if subnets and not isinstance(subnets, list):
+        _err('network.subnets', 'Must be a list')
+        subnets = []
+
+    for i, s in enumerate(subnets):
+        pfx = f'network.subnets[{i}]'
+        if not isinstance(s, dict):
+            _err(pfx, 'Each subnet must be a mapping')
+            continue
+        sname = str(s.get('name', '')).strip()
+        if not sname:
+            _warn(f'{pfx}.name', 'Subnet name is empty')
+        else:
+            if sname in subnet_names:
+                _err(f'{pfx}.name', f'Duplicate subnet name {sname!r}')
+            subnet_names.add(sname)
+        if not s.get('purpose'):
+            _warn(f'{pfx}.purpose', 'No purpose specified')
+        cidr = s.get('cidr')
+        if cidr is not None:
+            try:
+                c = int(cidr)
+                if not 8 <= c <= 30:
+                    _err(f'{pfx}.cidr', f'CIDR prefix {c} is outside valid range 8–30')
+            except (TypeError, ValueError):
+                _err(f'{pfx}.cidr', f'Must be an integer, got {cidr!r}')
+        if s.get('dhcp'):
+            for off_key in ('dhcp_start', 'dhcp_end'):
+                val = s.get(off_key)
+                if val is not None:
+                    try:
+                        v = int(val)
+                        if not 1 <= v <= 254:
+                            _err(f'{pfx}.{off_key}', f'Host offset {v} outside 1–254')
+                    except (TypeError, ValueError):
+                        _err(f'{pfx}.{off_key}', f'Must be an integer, got {val!r}')
+
+    # ── dns ──
+    dns = template.get('dns') or {}
+    if dns and not isinstance(dns, dict):
+        _err('dns', 'Must be a mapping')
+        dns = {}
+
+    if not dns.get('parent'):
+        _warn('dns.parent',
+              'Not set — falls back to INI [DEFAULTS] dns_parent; runtime error if missing there too')
+
+    for bool_key in ('create_zone', 'create_reverse_zone'):
+        val = dns.get(bool_key)
+        if val is not None and not isinstance(val, bool):
+            _err(f'dns.{bool_key}', f'Must be true or false, got {val!r}')
+
+    # ── hosts ──
+    hosts = template.get('hosts') or []
+    if hosts and not isinstance(hosts, list):
+        _err('hosts', 'Must be a list')
+        hosts = []
+
+    for i, h in enumerate(hosts):
+        pfx = f'hosts[{i}]'
+        if not isinstance(h, dict):
+            _err(pfx, 'Each host must be a mapping')
+            continue
+        if not h.get('hostname'):
+            _err(f'{pfx}.hostname', 'hostname is required')
+        ref = str(h.get('subnet', '')).strip()
+        if ref and subnet_names and ref not in subnet_names:
+            _err(f'{pfx}.subnet',
+                 f'References unknown subnet {ref!r}; defined: {sorted(subnet_names)}')
+
+    # ── tags ──
+    tags = template.get('tags') or {}
+    if tags and not isinstance(tags, dict):
+        _err('tags', 'Must be a mapping of key: value pairs')
+    elif tags:
+        for k, v in tags.items():
+            if not isinstance(k, str):
+                _err(f'tags', f'Tag key {k!r} must be a string')
+            if v is not None and not isinstance(v, (str, int, float, bool)):
+                _warn(f'tags.{k}', f'Value {v!r} is not a scalar')
+
+    return {
+        'valid': len(errors) == 0,
+        'template': template_name,
+        'errors': errors,
+        'warnings': warnings,
+    }

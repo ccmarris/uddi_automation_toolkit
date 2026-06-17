@@ -109,8 +109,10 @@ __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
 import argparse
+import dataclasses
 import datetime
 import ipaddress
+import json
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -925,6 +927,16 @@ def parseargs() -> argparse.Namespace:
         help='Enable INFO logging',
     )
 
+    # Output format
+    parser.add_argument(
+        '--json',
+        dest='json_output',
+        action='store_true',
+        default=False,
+        help='Emit a single JSON object to stdout instead of human-readable output; '
+             'log messages still go to stderr',
+    )
+
     return parser.parse_args()
 
 
@@ -1004,12 +1016,13 @@ def main() -> None:
     )
 
     mode_label = '[DRY-RUN] ' if cfg.dry_run else ''
-    print(f'\n{mode_label}Decommissioning site: {cfg.site}')
-    if args.template:
-        print(f'  Template: {args.template}')
+    if not args.json_output:
+        print(f'\n{mode_label}Decommissioning site: {cfg.site}')
+        if args.template:
+            print(f'  Template: {args.template}')
 
-    # Confirmation gate — skipped in dry-run mode and when --force is set
-    if not cfg.dry_run and not cfg.force:
+    # Confirmation gate — skipped in dry-run mode, --force, and --json (non-interactive)
+    if not cfg.dry_run and not cfg.force and not args.json_output:
         if not confirm_decommission(cfg):
             print('Aborted.')
             sys.exit(0)
@@ -1021,8 +1034,11 @@ def main() -> None:
     decommissioner = SiteDecommissioner(client, cfg)
     result = decommissioner.decommission()
 
-    # Print summary
-    print_result(result)
+    # Output result
+    if args.json_output:
+        print(json.dumps(dataclasses.asdict(result)))
+    else:
+        print_result(result)
 
 
 if __name__ == '__main__':

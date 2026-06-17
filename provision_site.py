@@ -145,8 +145,10 @@ __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
 import argparse
+import dataclasses
 import datetime
 import ipaddress
+import json
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -1384,6 +1386,16 @@ def parseargs() -> argparse.Namespace:
         help='Enable INFO logging',
     )
 
+    # Output format
+    parser.add_argument(
+        '--json',
+        dest='json_output',
+        action='store_true',
+        default=False,
+        help='Emit a single JSON object to stdout instead of human-readable output; '
+             'log messages still go to stderr',
+    )
+
     return parser.parse_args()
 
 
@@ -1430,9 +1442,10 @@ def main() -> None:
     logger.info('Site config: %s', site_cfg)
 
     mode_label = '[DRY-RUN] ' if site_cfg.dry_run else ''
-    print(f'\n{mode_label}Provisioning site: {site_cfg.site}')
-    if args.template:
-        print(f'  Template: {args.template}')
+    if not args.json_output:
+        print(f'\n{mode_label}Provisioning site: {site_cfg.site}')
+        if args.template:
+            print(f'  Template: {args.template}')
 
     # Initialise API client
     client = UDDIClient(url=base_url, api_key=api_key, verify_ssl=verify_ssl)
@@ -1441,8 +1454,11 @@ def main() -> None:
     provisioner = SiteProvisioner(client, site_cfg, ini_defaults=ini_defaults)
     result = provisioner.provision()
 
-    # Print summary
-    print_result(result)
+    # Output result
+    if args.json_output:
+        print(json.dumps(dataclasses.asdict(result)))
+    else:
+        print_result(result)
 
 
 if __name__ == '__main__':
