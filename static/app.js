@@ -465,6 +465,76 @@ function _confirmDeleteFolder(dirPath) {
     .catch(err => toast('Failed: ' + err.message));
 }
 
+// ── Output tab switching ──────────────────────────────────────────────────────
+
+let _outputTab = 'clean';
+
+function switchOutputTab(tab) {
+  _outputTab = tab;
+  document.getElementById('otab-clean').classList.toggle('active', tab === 'clean');
+  document.getElementById('otab-raw').classList.toggle('active', tab === 'raw');
+  document.getElementById('output-clean-area').style.display = tab === 'clean' ? '' : 'none';
+  document.getElementById('output').style.display            = tab === 'raw'   ? '' : 'none';
+}
+
+// ── Clean output parser ───────────────────────────────────────────────────────
+
+const _LOG_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+[\w.]+: (.+)$/;
+
+const _LEVEL_META = {
+  INFO:     { icon: '●', cls: 'ci-info' },
+  WARNING:  { icon: '▲', cls: 'ci-warn' },
+  ERROR:    { icon: '✗', cls: 'ci-error' },
+  CRITICAL: { icon: '✗', cls: 'ci-error' },
+  PLAIN:    { icon: '·', cls: 'ci-plain' },
+  DRYRUN:   { icon: '◆', cls: 'ci-dryrun' },
+};
+
+function _parseCleanLine(text) {
+  const m = text.match(_LOG_RE);
+  if (m) {
+    const level = m[2];
+    const msg   = m[3];
+    if (level === 'DEBUG') return null;
+    const isDryRun = msg.includes('[DRY-RUN]');
+    return { level: isDryRun ? 'DRYRUN' : level, msg: isDryRun ? msg.replace('[DRY-RUN] ', '') : msg };
+  }
+  if (text.startsWith('[EXIT:')) return null;
+  const isDryRun = text.includes('[DRY-RUN]');
+  if (isDryRun) return { level: 'DRYRUN', msg: text.replace('[DRY-RUN] ', '') };
+  if (text.trim()) return { level: 'PLAIN', msg: text };
+  return null;
+}
+
+function _appendClean(parsed) {
+  const area = document.getElementById('output-clean-area');
+  const meta = _LEVEL_META[parsed.level] || _LEVEL_META.PLAIN;
+  const item = document.createElement('div');
+  item.className = 'clean-item ' + meta.cls;
+  item.innerHTML =
+    '<span class="clean-icon">' + meta.icon + '</span>' +
+    '<span class="clean-msg">' + htmlEsc(parsed.msg) + '</span>';
+  area.appendChild(item);
+  area.parentElement.scrollTop = area.parentElement.scrollHeight;
+}
+
+function _appendCleanHeader(text) {
+  const area = document.getElementById('output-clean-area');
+  const hdr = document.createElement('div');
+  hdr.className = 'clean-header';
+  hdr.textContent = text;
+  area.appendChild(hdr);
+}
+
+function _appendCleanSummary(code) {
+  const area = document.getElementById('output-clean-area');
+  const el = document.createElement('div');
+  el.className = 'clean-summary ' + (code === 0 ? 'cs-ok' : 'cs-err');
+  el.textContent = code === 0 ? '✓  Completed successfully' : '✗  Failed (exit code ' + code + ')';
+  area.appendChild(el);
+  area.parentElement.scrollTop = area.parentElement.scrollHeight;
+}
+
 // ── Execution ────────────────────────────────────────────────────────────────
 
 function updateExecControls() {
@@ -500,7 +570,9 @@ function execute() {
   // Provision / decommission — SSE streaming to terminal
   showTerminal();
   clearOutput();
-  appendOutput('▶ ' + action.toUpperCase() + ': ' + name + (dryRun ? '  [DRY-RUN]' : '') + '\n\n', 'out-dryrun');
+  const headerLine = '▶ ' + action.toUpperCase() + ': ' + name + (dryRun ? '  [DRY-RUN]' : '');
+  appendOutput(headerLine + '\n\n', 'out-dryrun');
+  _appendCleanHeader(headerLine);
 
   const body = { template: name, verbose: true };
   if (action === 'provision') {
@@ -535,6 +607,7 @@ function execute() {
               '\n' + (code === 0 ? '✓' : '✗') + ' Exited with code ' + code + '\n',
               code === 0 ? 'out-success' : 'out-error',
             );
+            _appendCleanSummary(code);
             execDone();
           } else {
             renderLine(text + '\n');
@@ -654,12 +727,15 @@ function renderQueryResult(r) {
 }
 
 function showTerminal() {
+  document.getElementById('output-tabs').style.display = '';
   document.getElementById('output-area').style.display = '';
   document.getElementById('query-results').style.display = 'none';
   document.getElementById('btn-copy-output').style.display = '';
+  switchOutputTab(_outputTab);
 }
 
 function showQueryResults() {
+  document.getElementById('output-tabs').style.display = 'none';
   document.getElementById('output-area').style.display = 'none';
   document.getElementById('query-results').style.display = '';
   document.getElementById('btn-copy-output').style.display = 'none';
@@ -672,7 +748,9 @@ function renderLine(text) {
   else if (lower.includes('error') || lower.includes('failed')) cls = 'out-error';
   else if (lower.includes('warn'))                              cls = 'out-warn';
   else if (lower.includes('complete') || lower.includes('created') || lower.includes('success')) cls = 'out-success';
-  appendOutput(text, cls);
+  appendOutput(text + '\n', cls);
+  const parsed = _parseCleanLine(text);
+  if (parsed) _appendClean(parsed);
 }
 
 function execDone() {
@@ -698,6 +776,7 @@ function appendOutput(text, cls) {
 
 function clearOutput() {
   document.getElementById('output').innerHTML = '';
+  document.getElementById('output-clean-area').innerHTML = '';
   document.getElementById('query-results').innerHTML = '';
   showTerminal();
 }

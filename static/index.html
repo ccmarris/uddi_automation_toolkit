@@ -433,11 +433,51 @@ input[type="text"]::placeholder { color: #b0b8c0; }
 .exec-btn-row { display: flex; gap: 6px; }
 .exec-btn-row .btn { flex: 1; font-size: 11px; padding: 7px 6px; }
 
+/* Output sub-tabs */
+.output-tabs {
+  display: flex; flex-shrink: 0;
+  background: #161b22; border-bottom: 1px solid #21262d; padding: 0 8px;
+}
+.output-tab-btn {
+  font-family: inherit; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: #8b949e; background: none; border: none;
+  padding: 6px 10px; cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color 0.15s;
+}
+.output-tab-btn.active { color: var(--ibx-green); border-bottom-color: var(--ibx-green); }
+.output-tab-btn:hover:not(.active) { color: #c9d1d9; }
+
 /* Output area */
 .output-area {
   flex: 1; overflow-y: auto; background: #0d1117; padding: 10px 12px;
   display: flex; flex-direction: column;
 }
+#output-clean-area { font-size: 12px; line-height: 1.65; }
+.clean-header {
+  font-family: 'Courier New', monospace; font-size: 11px;
+  color: #a5d6ff; margin-bottom: 6px; padding-bottom: 6px;
+  border-bottom: 1px solid #21262d;
+}
+.clean-item { display: flex; align-items: baseline; gap: 8px; padding: 1px 0; }
+.clean-icon { font-size: 10px; flex-shrink: 0; width: 14px; text-align: center; }
+.clean-msg  { color: #c9d1d9; word-break: break-word; }
+.ci-info    .clean-icon { color: #7ee787; }
+.ci-warn    .clean-icon { color: #e3b341; }
+.ci-error   .clean-icon { color: #ff7b72; }
+.ci-dryrun  .clean-icon { color: #a5d6ff; }
+.ci-plain   .clean-icon { color: #484f58; }
+.ci-dryrun  .clean-msg  { color: #a5d6ff; }
+.ci-warn    .clean-msg  { color: #e3b341; }
+.ci-error   .clean-msg  { color: #ff7b72; }
+.clean-summary {
+  margin-top: 10px; padding: 6px 10px; border-radius: 3px;
+  font-weight: 700; font-size: 12px; display: flex; align-items: center; gap: 8px;
+}
+.clean-summary.cs-ok  { background: rgba(126,231,135,0.1); color: #7ee787; }
+.clean-summary.cs-err { background: rgba(255,123,114,0.1); color: #ff7b72; }
+
 #output {
   font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.55;
   color: #c9d1d9; white-space: pre-wrap; word-break: break-word; flex: 1;
@@ -775,8 +815,13 @@ input[type="text"]::placeholder { color: #b0b8c0; }
       </div>
     </div>
 
+    <div class="output-tabs" id="output-tabs">
+      <button class="output-tab-btn active" id="otab-clean" onclick="switchOutputTab('clean')">Clean</button>
+      <button class="output-tab-btn" id="otab-raw" onclick="switchOutputTab('raw')">Raw</button>
+    </div>
     <div class="output-area" id="output-area">
-      <pre id="output"></pre>
+      <div id="output-clean-area"></div>
+      <pre id="output" style="display:none"></pre>
     </div>
     <div class="query-results" id="query-results" style="display:none"></div>
     <div class="output-footer">
