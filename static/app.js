@@ -73,11 +73,68 @@ function switchTab(tab) {
 // Track which folders are collapsed: Set of folder paths (e.g. 'emea')
 const collapsedFolders = new Set();
 
+// Full template list cached for client-side filtering
+let _templateList = [];
+
 function refreshTemplates() {
   fetch('/api/templates')
     .then(r => r.json())
-    .then(list => renderTemplateTree(list))
+    .then(list => {
+      _templateList = list || [];
+      const q = document.getElementById('tmpl-search').value;
+      if (q.trim()) {
+        _renderFiltered(q.trim());
+      } else {
+        renderTemplateTree(_templateList);
+      }
+    })
     .catch(err => toast('Failed to load templates: ' + err.message));
+}
+
+function filterTemplates(query) {
+  if (!query.trim()) {
+    renderTemplateTree(_templateList);
+  } else {
+    _renderFiltered(query.trim());
+  }
+}
+
+function _renderFiltered(query) {
+  const lower = query.toLowerCase();
+  const container = document.getElementById('tmpl-list');
+  container.innerHTML = '';
+
+  const matches = _templateList.filter(e =>
+    e.type === 'file' && e.name.toLowerCase().includes(lower)
+  );
+
+  if (!matches.length) {
+    container.innerHTML = '<div style="padding:14px 16px;font-size:12px;color:rgba(255,255,255,0.3)">No matches</div>';
+    return;
+  }
+
+  matches.forEach(tmpl => {
+    const label = tmpl.name;
+    const el = document.createElement('div');
+    el.className = 'tmpl-item' + (tmpl.name === currentTemplate ? ' active' : '');
+    el.title = tmpl.name;
+    el.dataset.tmplName = tmpl.name;
+    el.onclick = () => loadTemplate(tmpl.name);
+
+    // Highlight matching portion
+    const idx = label.toLowerCase().indexOf(lower);
+    if (idx >= 0) {
+      el.appendChild(document.createTextNode(label.slice(0, idx)));
+      const mark = document.createElement('span');
+      mark.className = 'tmpl-search-match';
+      mark.textContent = label.slice(idx, idx + query.length);
+      el.appendChild(mark);
+      el.appendChild(document.createTextNode(label.slice(idx + query.length)));
+    } else {
+      el.textContent = label;
+    }
+    container.appendChild(el);
+  });
 }
 
 function _buildTree(list) {
