@@ -107,7 +107,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from uddi_client import UDDIClient
-from uddi_utils import load_yaml_template, read_config, resolve_credentials, setup_logging
+from uddi_utils import env_config, load_yaml_template, read_config, resolve_credentials, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -195,11 +195,14 @@ def template_to_query_config(
     dns_sec  = template.get('dns', {}) or {}
 
     def resolve(cli_val, yaml_val, ini_key, fallback=''):
-        '''Return the first non-None/non-empty value in priority order.'''
+        '''Return first non-empty value: CLI > YAML > env var > INI > fallback.'''
         if cli_val is not None and cli_val != '':
             return cli_val
         if yaml_val is not None and yaml_val != '':
             return yaml_val
+        env_val = env_config(ini_key)
+        if env_val:
+            return env_val
         return ini_defaults.get(ini_key, fallback)
 
     site = resolve(

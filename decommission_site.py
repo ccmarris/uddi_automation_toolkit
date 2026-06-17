@@ -119,7 +119,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from uddi_client import UDDIClient
-from uddi_utils import load_yaml_template, read_config, resolve_credentials, setup_logging, reverse_zone_fqdn
+from uddi_utils import env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, reverse_zone_fqdn
 
 logger = logging.getLogger(__name__)
 
@@ -983,12 +983,15 @@ def main() -> None:
     net_sec  = template.get('network', {}) or {}
     dns_sec  = template.get('dns', {}) or {}
 
-    # Resolve each value: CLI > YAML template > INI > error
+    # Resolve each value: CLI > YAML template > env var > INI > error
     def resolve(cli_val: Optional[str], yaml_val, ini_key: str, label: str) -> str:
         if cli_val:
             return cli_val
         if yaml_val:
             return str(yaml_val)
+        env_val = env_config(ini_key)
+        if env_val:
+            return env_val
         v = ini.get(ini_key, '')
         if not v:
             logger.error(

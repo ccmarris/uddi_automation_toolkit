@@ -97,7 +97,7 @@ import subprocess
 import sys
 
 from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
-from uddi_utils import load_yaml_template, read_config, resolve_credentials, setup_logging, validate_template
+from uddi_utils import env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, validate_template
 
 logger = logging.getLogger(__name__)
 
@@ -642,20 +642,26 @@ def validate_template_route():
 @app.route('/api/config', methods=['GET'])
 def get_config():
     '''
-    Return non-secret configuration values from the INI file.
-
-    The api_key is explicitly excluded — it never leaves the server.
+    Return non-secret configuration values, resolved in priority order:
+    env var > INI file.  The api_key is never returned.
     '''
     cfg = configparser.ConfigParser()
     cfg.read(CONFIG_FILE)
 
+    def _resolve(ini_section, ini_key, fallback=''):
+        '''env var wins over INI; INI wins over fallback.'''
+        env_val = env_config(ini_key)
+        if env_val:
+            return env_val
+        return cfg.get(ini_section, ini_key, fallback=fallback)
+
     safe_config = {
         'url':         cfg.get('UDDI', 'url', fallback=''),
-        'ip_space':    cfg.get('DEFAULTS', 'ip_space', fallback=''),
-        'dns_parent':  cfg.get('DEFAULTS', 'dns_parent', fallback=''),
-        'dns_view':    cfg.get('DEFAULTS', 'dns_view', fallback=''),
-        'owner':       cfg.get('DEFAULTS', 'owner', fallback=''),
-        'subnet_size': cfg.get('DEFAULTS', 'subnet_size', fallback='24'),
+        'ip_space':    _resolve('DEFAULTS', 'ip_space'),
+        'dns_parent':  _resolve('DEFAULTS', 'dns_parent'),
+        'dns_view':    _resolve('DEFAULTS', 'dns_view'),
+        'owner':       _resolve('DEFAULTS', 'owner'),
+        'subnet_size': _resolve('DEFAULTS', 'subnet_size', fallback='24'),
     }
     return jsonify(safe_config)
 

@@ -53,7 +53,7 @@
 
 ------------------------------------------------------------------------
 '''
-__version__ = '1.2.0'
+__version__ = '1.3.0'
 __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
@@ -66,6 +66,38 @@ import sys
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Environment variable configuration map
+# ---------------------------------------------------------------------------
+
+# Maps INI [DEFAULTS] key names to their UDDI_ env var equivalents.
+# Used by provision_site.py, decommission_site.py, and query_site.py to
+# support zero-INI-file operation (all config injected as env vars).
+#
+# Resolution order in each script: CLI flag > YAML template > env var > INI
+ENV_CONFIG_MAP: dict[str, str] = {
+    'ip_space':    'UDDI_IP_SPACE',
+    'dns_parent':  'UDDI_DNS_PARENT',
+    'dns_view':    'UDDI_DNS_VIEW',
+    'owner':       'UDDI_OWNER',
+    'subnet_size': 'UDDI_SUBNET_SIZE',
+}
+
+
+def env_config(key: str) -> str:
+    '''
+    Return the environment variable value for a config key, or ''.
+
+    Args:
+        key: INI [DEFAULTS] key name (e.g. 'ip_space', 'dns_parent')
+
+    Returns:
+        The env var value stripped of surrounding whitespace, or '' if
+        the key has no mapping or the env var is unset/empty.
+    '''
+    env_var = ENV_CONFIG_MAP.get(key, '')
+    return os.environ.get(env_var, '').strip() if env_var else ''
 
 
 def load_yaml_template(path: str) -> dict:
