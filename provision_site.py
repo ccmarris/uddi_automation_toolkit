@@ -221,6 +221,7 @@ class SiteConfig:
     create_zone: bool = False
     create_reverse_zone: bool = False
     no_rollback: bool = False
+    if_not_exists: bool = False
     extra_tags: dict = field(default_factory=dict)
     _subnet_plan: list[SubnetDef] = field(default_factory=list)
     _hosts: list[HostDef] = field(default_factory=list)
@@ -278,6 +279,8 @@ class ProvisionResult:
     reverse_zones: list[dict] = field(default_factory=list)
     hosts: list[dict] = field(default_factory=list)
     dry_run: bool = False
+    skipped: bool = False
+    skip_reason: str = ''
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +457,7 @@ def template_to_site_config(
         create_zone=create_zone,
         create_reverse_zone=create_reverse_zone,
         no_rollback=getattr(cli_args, 'no_rollback', False),
+        if_not_exists=getattr(cli_args, 'if_not_exists', False),
         extra_tags=extra_tags,
         _subnet_plan=subnet_plan,
         _hosts=host_list,
@@ -527,6 +531,34 @@ class SiteProvisioner:
     # ------------------------------------------------------------------
     # Step 2: Find available address block by tags
     # ------------------------------------------------------------------
+
+    def find_existing_site(self) -> dict:
+        '''
+        Check whether this site has already been provisioned by looking
+        for a block in the IP space tagged Site==cfg.site and
+        Status==allocated.
+
+        Returns:
+            Existing block resource dict if found, or {} if not found.
+        '''
+        filter_expr = (
+            f'space=="{self._space_id}" and '
+            f'tags.Site=="{self.cfg.site}" and '
+            f'tags.Status=="allocated"'
+        )
+        data = self.client.get(
+            '/ipam/address_block',
+            params={'_filter': filter_expr},
+        )
+        results = data.get('results', [])
+        if results:
+            block = results[0]
+            logger.info(
+                'Existing allocated block found for site %r: %s/%s  id=%s',
+                self.cfg.site, block['address'], block['cidr'], block['id'],
+            )
+            return block
+        return {}
 
     def find_available_block(self) -> dict:
         '''
@@ -1117,6 +1149,24 @@ class SiteProvisioner:
             # Step 1: Resolve IP space
             self.resolve_ip_space()
 
+            # Idempotency: check whether this site is already provisioned
+            existing = self.find_existing_site()
+            if existing:
+                msg = (
+                    f'Site {self.cfg.site!r} is already provisioned '
+                    f'(block {existing["address"]}/{existing["cidr"]}  id={existing["id"]})'
+                )
+                if self.cfg.if_not_exists:
+                    logger.info('%s — skipping (--if-not-exists)', msg)
+                    result.skipped = True
+                    result.skip_reason = 'already provisioned'
+                    result.block_id = existing.get('id', '')
+                    result.block_address = f'{existing["address"]}/{existing["cidr"]}'
+                    return result
+                else:
+                    logger.error('%s — use --if-not-exists to skip', msg)
+                    sys.exit(1)
+
             # Step 2: Find available block by tags
             block = self.find_available_block()
             result.block_id = block.get('id', '')
@@ -1194,6 +1244,14 @@ def print_result(result: ProvisionResult) -> None:
     Args:
         result: ProvisionResult from SiteProvisioner.provision()
     '''
+    if result.skipped:
+        print()
+        print('=' * 60)
+        print(f'Site already provisioned — skipped ({result.skip_reason})')
+        print(f'  Address block : {result.block_address}  id={result.block_id}')
+        print('=' * 60)
+        return
+
     mode = '[DRY-RUN] ' if result.dry_run else ''
     print()
     print('=' * 60)
@@ -1384,6 +1442,16 @@ def parseargs() -> argparse.Namespace:
         action='store_true',
         default=False,
         help='Enable INFO logging',
+    )
+
+    # Idempotency
+    parser.add_argument(
+        '--if-not-exists',
+        dest='if_not_exists',
+        action='store_true',
+        default=False,
+        help='Skip provisioning silently (exit 0) if the site is already provisioned; '
+             'without this flag the script exits with an error when the site exists',
     )
 
     # Output format
