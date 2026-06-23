@@ -106,7 +106,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
-from uddi_client import UDDIClient
+from uddi_client import UDDIClient, UDDIError
 from uddi_utils import env_config, load_yaml_template, read_config, resolve_credentials, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -197,13 +197,16 @@ def template_to_query_config(
     def resolve(cli_val, yaml_val, ini_key, fallback=''):
         '''Return first non-empty value: CLI > YAML > env var > INI > fallback.'''
         if cli_val is not None and cli_val != '':
-            return cli_val
-        if yaml_val is not None and yaml_val != '':
-            return yaml_val
-        env_val = env_config(ini_key)
-        if env_val:
-            return env_val
-        return ini_defaults.get(ini_key, fallback)
+            resolved = cli_val
+        elif yaml_val is not None and yaml_val != '':
+            resolved = yaml_val
+        else:
+            env_val = env_config(ini_key)
+            if env_val:
+                resolved = env_val
+            else:
+                resolved = ini_defaults.get(ini_key, fallback)
+        return resolved
 
     site = resolve(
         getattr(cli_args, 'site', None),
@@ -275,6 +278,7 @@ class SiteQuerier:
         self.cfg = cfg
         self._space_id: str = ''
         self._view_id: str = ''
+        return
 
     # ------------------------------------------------------------------
     # Step 1: Resolve IP space
@@ -389,11 +393,10 @@ class SiteQuerier:
             List of subnet resource dicts
         '''
         logger.info('Listing subnets in block %s', block['id'])
-        data = self.client.get(
+        subnets = self.client.get_all(
             '/ipam/subnet',
             params={'_filter': f'parent=="{block["id"]}"'},
         )
-        subnets = data.get('results', [])
         logger.info('Found %d subnet(s)', len(subnets))
         return subnets
 
@@ -401,46 +404,58 @@ class SiteQuerier:
     # Step 5: Find hosts in a subnet
     # ------------------------------------------------------------------
 
-    def find_hosts_in_subnet(self, subnet: dict) -> list:
+    def find_all_hosts(self) -> list:
+        '''
+        Fetch every IPAM host once, following pagination.
+
+        Returned once and reused for all subnets so the host table is not
+        re-fetched per subnet (avoids an N+1 query pattern).
+
+        Returns:
+            List of all IPAM host resource dicts in the tenant
+        '''
+        logger.debug('Fetching all hosts for client-side subnet filtering')
+        return self.client.get_all('/ipam/host')
+
+    def find_hosts_in_subnet(self, subnet: dict, all_hosts: list) -> list:
         '''
         List IPAM hosts whose primary address falls within the subnet.
 
-        Fetches all hosts in the IP space and filters client-side using
-        the ipaddress module for reliable CIDR membership checking.
+        Filters the pre-fetched host list client-side using the ipaddress
+        module for reliable CIDR membership checking.
 
         Args:
-            subnet: Subnet resource dict (must have 'address' and 'cidr')
+            subnet:    Subnet resource dict (must have 'address' and 'cidr')
+            all_hosts: Host list from find_all_hosts()
 
         Returns:
             List of IPAM host resource dicts within the subnet
         '''
+        matching = []
         try:
             network = ipaddress.ip_network(
                 f'{subnet["address"]}/{subnet["cidr"]}', strict=False,
             )
         except (KeyError, ValueError) as exc:
             logger.warning('Cannot compute network for subnet %s: %s', subnet.get('id'), exc)
-            return []
+            network = None
 
-        logger.debug('Fetching all hosts to filter for subnet %s', network)
-        data = self.client.get('/ipam/host')
-        all_hosts = data.get('results', [])
+        if network is not None:
+            for host in all_hosts:
+                for addr_entry in host.get('addresses', []):
+                    try:
+                        ip = ipaddress.ip_address(addr_entry.get('address', ''))
+                        if ip in network:
+                            matching.append(host)
+                            break
+                    except ValueError:
+                        continue
 
-        matching = []
-        for host in all_hosts:
-            for addr_entry in host.get('addresses', []):
-                try:
-                    ip = ipaddress.ip_address(addr_entry.get('address', ''))
-                    if ip in network:
-                        matching.append(host)
-                        break
-                except ValueError:
-                    continue
+            logger.debug(
+                'Found %d host(s) in subnet %s/%s',
+                len(matching), subnet['address'], subnet['cidr'],
+            )
 
-        logger.debug(
-            'Found %d host(s) in subnet %s/%s',
-            len(matching), subnet['address'], subnet['cidr'],
-        )
         return matching
 
     # ------------------------------------------------------------------
@@ -471,9 +486,11 @@ class SiteQuerier:
         results = data.get('results', [])
         if results:
             logger.info('DNS zone found: id=%s', results[0].get('id'))
-            return results[0]
-        logger.info('DNS zone not found: %s', fqdn)
-        return {}
+            zone = results[0]
+        else:
+            logger.info('DNS zone not found: %s', fqdn)
+            zone = {}
+        return zone
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -500,10 +517,11 @@ class SiteQuerier:
         # Step 3: Resolve DNS view
         self.resolve_dns_view()
 
-        # Step 4 + 5: Find subnets and their hosts
+        # Step 4 + 5: Find subnets and their hosts (fetch hosts once, reuse)
         subnets_raw = self.find_subnets(block)
+        all_hosts = self.find_all_hosts() if subnets_raw else []
         for subnet in subnets_raw:
-            hosts_raw = self.find_hosts_in_subnet(subnet)
+            hosts_raw = self.find_hosts_in_subnet(subnet, all_hosts)
             hosts_out = []
             for h in hosts_raw:
                 primary_ip = ''
@@ -516,12 +534,13 @@ class SiteQuerier:
                     'ip':       primary_ip,
                     'comment':  h.get('comment', ''),
                 })
+            stags = subnet.get('tags', {})
             result.subnets.append({
                 'id':      subnet.get('id', ''),
                 'address': subnet.get('address', ''),
                 'cidr':    subnet.get('cidr', ''),
-                'name':    subnet.get('name', ''),
-                'tags':    subnet.get('tags', {}),
+                'name':    subnet.get('name', '') or stags.get('Name', ''),
+                'tags':    stags,
                 'hosts':   hosts_out,
             })
 
@@ -583,6 +602,7 @@ def print_result(result: QueryResult, site: str) -> None:
 
     print('=' * 60)
     print()
+    return
 
 
 def print_json_result(result: QueryResult) -> None:
@@ -593,6 +613,7 @@ def print_json_result(result: QueryResult) -> None:
         result: QueryResult from SiteQuerier.query()
     '''
     print(json.dumps(dataclasses.asdict(result), indent=2))
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -747,12 +768,17 @@ def main() -> None:
     client = UDDIClient(url=base_url, api_key=api_key, verify_ssl=verify_ssl)
 
     querier = SiteQuerier(client, query_cfg)
-    result = querier.query()
+    try:
+        result = querier.query()
+    except UDDIError as exc:
+        logger.error('Query failed on API error: %s', exc)
+        sys.exit(1)
 
     if query_cfg.output_json:
         print_json_result(result)
     else:
         print_result(result, query_cfg.site)
+    return
 
 
 if __name__ == '__main__':

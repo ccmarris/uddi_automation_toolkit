@@ -154,7 +154,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
-from uddi_client import UDDIClient
+from uddi_client import UDDIClient, UDDIError
 from uddi_utils import env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, reverse_zone_fqdn
 
 logger = logging.getLogger(__name__)
@@ -239,12 +239,14 @@ class SiteConfig:
         (mgmt / user-lan / server) when no template was supplied.
         '''
         if self._subnet_plan:
-            return self._subnet_plan
-        return [
-            SubnetDef(name=f'{self.site}-mgmt',   purpose='mgmt',     dhcp='false'),
-            SubnetDef(name=f'{self.site}-lan',    purpose='user-lan', dhcp='true'),
-            SubnetDef(name=f'{self.site}-server', purpose='server',   dhcp='false'),
-        ]
+            plan = self._subnet_plan
+        else:
+            plan = [
+                SubnetDef(name=f'{self.site}-mgmt',   purpose='mgmt',     dhcp='false'),
+                SubnetDef(name=f'{self.site}-lan',    purpose='user-lan', dhcp='true'),
+                SubnetDef(name=f'{self.site}-server', purpose='server',   dhcp='false'),
+            ]
+        return plan
 
     @property
     def hosts(self) -> list[HostDef]:
@@ -253,15 +255,17 @@ class SiteConfig:
         (gw01 in the first subnet) when no template was supplied.
         '''
         if self._hosts:
-            return self._hosts
-        first_subnet = self.subnet_plan[0].name
-        return [
-            HostDef(
-                hostname=f'gw01',
-                subnet=first_subnet,
-                comment=f'{self.site.capitalize()} site gateway',
-            )
-        ]
+            host_list = self._hosts
+        else:
+            first_subnet = self.subnet_plan[0].name
+            host_list = [
+                HostDef(
+                    hostname=f'gw01',
+                    subnet=first_subnet,
+                    comment=f'{self.site.capitalize()} site gateway',
+                )
+            ]
+        return host_list
 
 
 @dataclass
@@ -322,13 +326,16 @@ def template_to_site_config(
     def resolve(cli_val, yaml_val, ini_key, fallback=''):
         '''Return first non-empty value: CLI > YAML > env var > INI > fallback.'''
         if cli_val is not None and cli_val != '':
-            return cli_val
-        if yaml_val is not None and yaml_val != '':
-            return yaml_val
-        env_val = env_config(ini_key)
-        if env_val:
-            return env_val
-        return ini_defaults.get(ini_key, fallback)
+            value = cli_val
+        elif yaml_val is not None and yaml_val != '':
+            value = yaml_val
+        else:
+            env_val = env_config(ini_key)
+            if env_val:
+                value = env_val
+            else:
+                value = ini_defaults.get(ini_key, fallback)
+        return value
 
     # --- Mandatory fields ---
     site = resolve(
@@ -399,7 +406,15 @@ def template_to_site_config(
         'subnet_size',
         fallback=24,
     )
-    subnet_size = int(subnet_size_raw)
+    try:
+        subnet_size = int(subnet_size_raw)
+    except (TypeError, ValueError):
+        logger.error(
+            'subnet_size must be an integer, got %r (check CLI --subnet-size, '
+            'YAML network.subnet_size, or INI [DEFAULTS] subnet_size)',
+            subnet_size_raw,
+        )
+        sys.exit(1)
 
     # --- Subnet plan from YAML ---
     subnet_plan: list[SubnetDef] = []
@@ -468,8 +483,26 @@ def template_to_site_config(
 
 
 # ---------------------------------------------------------------------------
-# Reverse DNS helpers
+# Helpers
 # ---------------------------------------------------------------------------
+
+def _block_sort_key(block: dict) -> tuple:
+    '''
+    Sort key for address blocks: (numeric address, cidr).
+
+    Falls back to a high sentinel for unparseable addresses so they sort
+    last rather than raising.
+    '''
+    try:
+        addr_int = int(ipaddress.ip_address(block.get('address', '')))
+    except ValueError:
+        addr_int = 1 << 128
+    try:
+        cidr = int(block.get('cidr', 0))
+    except (TypeError, ValueError):
+        cidr = 0
+    return (addr_int, cidr)
+
 
 # ---------------------------------------------------------------------------
 # Site provisioner
@@ -502,6 +535,7 @@ class SiteProvisioner:
         _ini = ini_defaults or {}
         self._dhcp_start_default: int = int(_ini.get('dhcp_start_offset', 10))
         self._dhcp_end_default: int = int(_ini.get('dhcp_end_offset', 250))
+        return
 
     # ------------------------------------------------------------------
     # Step 1: Resolve IP space
@@ -554,14 +588,15 @@ class SiteProvisioner:
             params={'_filter': filter_expr},
         )
         results = data.get('results', [])
+        found: dict = {}
         if results:
             block = results[0]
             logger.info(
                 'Existing allocated block found for site %r: %s/%s  id=%s',
                 self.cfg.site, block['address'], block['cidr'], block['id'],
             )
-            return block
-        return {}
+            found = block
+        return found
 
     def find_available_block(self) -> dict:
         '''
@@ -599,7 +634,14 @@ class SiteProvisioner:
             )
             sys.exit(1)
 
-        block = results[0]
+        # Deterministic selection: lowest address first, so repeated runs against
+        # the same pool of candidate blocks always pick the same one.
+        block = min(results, key=_block_sort_key)
+        if len(results) > 1:
+            logger.info(
+                '%d candidate blocks matched — selecting lowest: %s/%s',
+                len(results), block['address'], block['cidr'],
+            )
         logger.info(
             'Found block: %s/%s  id=%s',
             block['address'], block['cidr'], block['id'],
@@ -639,7 +681,7 @@ class SiteProvisioner:
     # Step 4: Carve subnets
     # ------------------------------------------------------------------
 
-    def create_subnets(self, block: dict) -> dict[str, dict]:
+    def create_subnets(self, block: dict, result: 'ProvisionResult') -> dict[str, dict]:
         '''
         Carve one subnet per entry in cfg.subnet_plan from the given
         address block, assigning addresses sequentially from the start
@@ -649,24 +691,51 @@ class SiteProvisioner:
         falls back to cfg.subnet_size.
 
         Each subnet receives tags:
-            Site, Region, Environment, Owner, Purpose, DHCP
+            Site, Region, Environment, Owner, Purpose, DHCP, Name
             plus any extra_tags defined in the YAML template.
 
         Args:
-            block: Address block resource dict from find_available_block()
+            block:  Address block resource dict from find_available_block()
+            result: ProvisionResult updated incrementally so rollback has
+                    accurate state even if we fail partway through.
 
         Returns:
             Dict mapping subnet name → subnet resource dict (or dry-run
             plan dict), allowing hosts to look up subnets by name.
         '''
-        block_addr = block['address']  # e.g. '10.20.0.0'
-        base_octets = block_addr.split('.')
+        try:
+            block_net = ipaddress.ip_network(
+                f'{block["address"]}/{block["cidr"]}', strict=False,
+            )
+        except (KeyError, ValueError) as exc:
+            logger.error('Invalid address block %s: %s', block.get('address'), exc)
+            sys.exit(1)
+        # Running cursor (as a 32-bit int) marking the next free address in the
+        # block.  Each subnet is aligned up to its own prefix boundary, carved,
+        # then the cursor advances past it — so mixed subnet sizes and blocks
+        # that do not start on a /16 boundary are both handled correctly.
+        cursor = int(block_net.network_address)
         created: dict[str, dict] = {}
 
-        for idx, sdef in enumerate(self.cfg.subnet_plan):
+        for sdef in self.cfg.subnet_plan:
             cidr = sdef.cidr if sdef.cidr is not None else self.cfg.subnet_size
-            # Assign sequentially from third octet within the block
-            subnet_addr = '.'.join(base_octets[:2] + [str(idx)] + ['0'])
+            size = 1 << (block_net.max_prefixlen - cidr)
+            # Align the cursor up to the subnet's prefix boundary
+            if cursor % size:
+                cursor += size - (cursor % size)
+            try:
+                subnet_net = ipaddress.ip_network((cursor, cidr))
+            except ValueError as exc:
+                logger.error('Cannot carve /%s subnet %s: %s', cidr, sdef.name, exc)
+                sys.exit(1)
+            if subnet_net.broadcast_address > block_net.broadcast_address:
+                logger.error(
+                    'Subnet plan does not fit in block %s: %s/%s would exceed %s',
+                    block_net, subnet_net.network_address, cidr, block_net.broadcast_address,
+                )
+                sys.exit(1)
+            subnet_addr = str(subnet_net.network_address)
+            cursor = int(subnet_net.broadcast_address) + 1
             tags = {
                 'Site':        self.cfg.site,
                 'Region':      self.cfg.region,
@@ -674,7 +743,8 @@ class SiteProvisioner:
                 'Owner':       self.cfg.owner,
                 'Purpose':     sdef.purpose,
                 'DHCP':        sdef.dhcp,
-                **self.cfg.extra_tags,
+                'Name':        sdef.name,
+                **{k: v for k, v in self.cfg.extra_tags.items() if k != 'Owner'},
             }
             logger.info(
                 '%sCreating subnet %s/%s  name=%s  purpose=%s',
@@ -689,10 +759,27 @@ class SiteProvisioner:
                     'name': sdef.name,
                     'tags': tags,
                 }
+                result.subnets.append({
+                    'address': f'{subnet_addr}/{cidr}',
+                    'name':    sdef.name,
+                    'id':      '(dry-run)',
+                })
                 if sdef.dhcp == 'true':
-                    subnet['_dhcp_range'] = self.create_dhcp_range(subnet, sdef)
+                    dhcp_range = self.create_dhcp_range(subnet, sdef)
+                    subnet['_dhcp_range'] = dhcp_range
+                    result.dhcp_ranges.append({
+                        'id':    '(dry-run)',
+                        'start': dhcp_range.get('start', ''),
+                        'end':   dhcp_range.get('end', ''),
+                        'name':  f'{sdef.name}-dhcp',
+                    })
                 if self.cfg.create_reverse_zone:
-                    subnet['_reverse_zone'] = self.create_reverse_zone(subnet_addr, cidr)
+                    reverse_zone = self.create_reverse_zone(subnet_addr, cidr)
+                    subnet['_reverse_zone'] = reverse_zone
+                    result.reverse_zones.append({
+                        'id':   '(dry-run)',
+                        'fqdn': reverse_zone.get('fqdn', ''),
+                    })
                 created[sdef.name] = subnet
                 continue
 
@@ -704,13 +791,31 @@ class SiteProvisioner:
                 'comment': f'{self.cfg.site.capitalize()} site - {sdef.purpose} network',
                 'tags':    tags,
             }
-            result = self.client.post('/ipam/subnet', body)
-            subnet = result.get('result', {})
+            api_result = self.client.post('/ipam/subnet', body)
+            subnet = api_result.get('result', {})
             logger.info('  Created subnet id=%s', subnet.get('id'))
+            # Track immediately so rollback covers this subnet if a later step fails
+            result.subnets.append({
+                'address': f'{subnet_addr}/{cidr}',
+                'name':    sdef.name,
+                'id':      subnet.get('id', ''),
+            })
             if sdef.dhcp == 'true':
-                subnet['_dhcp_range'] = self.create_dhcp_range(subnet, sdef)
+                dhcp_range = self.create_dhcp_range(subnet, sdef)
+                subnet['_dhcp_range'] = dhcp_range
+                result.dhcp_ranges.append({
+                    'id':    dhcp_range.get('id', ''),
+                    'start': dhcp_range.get('start', ''),
+                    'end':   dhcp_range.get('end', ''),
+                    'name':  f'{sdef.name}-dhcp',
+                })
             if self.cfg.create_reverse_zone:
-                subnet['_reverse_zone'] = self.create_reverse_zone(subnet_addr, cidr)
+                reverse_zone = self.create_reverse_zone(subnet_addr, cidr)
+                subnet['_reverse_zone'] = reverse_zone
+                result.reverse_zones.append({
+                    'id':   reverse_zone.get('id', ''),
+                    'fqdn': reverse_zone.get('fqdn', ''),
+                })
             created[sdef.name] = subnet
 
         return created
@@ -740,43 +845,44 @@ class SiteProvisioner:
 
         subnet_addr = subnet.get('address', '')
         cidr = subnet.get('cidr', self.cfg.subnet_size)
+        dhcp_range: dict = {}
         try:
             net = ipaddress.ip_network(f'{subnet_addr}/{cidr}', strict=False)
             start_ip = str(net.network_address + start_off)
             end_ip   = str(net.network_address + end_off)
         except ValueError as exc:
             logger.warning('Cannot compute DHCP range for subnet %s: %s', sdef.name, exc)
-            return {}
+        else:
+            logger.info(
+                '%sCreating DHCP range %s-%s  subnet=%s',
+                '[DRY-RUN] ' if self.cfg.dry_run else '',
+                start_ip, end_ip, sdef.name,
+            )
 
-        logger.info(
-            '%sCreating DHCP range %s-%s  subnet=%s',
-            '[DRY-RUN] ' if self.cfg.dry_run else '',
-            start_ip, end_ip, sdef.name,
-        )
+            if self.cfg.dry_run:
+                dhcp_range = {
+                    'dry_run': True,
+                    'start':   start_ip,
+                    'end':     end_ip,
+                    'name':    f'{sdef.name}-dhcp',
+                }
+            else:
+                body = {
+                    'start': start_ip,
+                    'end':   end_ip,
+                    'space': self._space_id,
+                    'comment': f'DHCP range for {sdef.name}',
+                    'tags': {
+                        'Site':    self.cfg.site,
+                        'Purpose': sdef.purpose,
+                        'Name':    f'{sdef.name}-dhcp',
+                        **self.cfg.extra_tags,
+                    },
+                }
+                result = self.client.post('/ipam/range', body)
+                dhcp_range = result.get('result', {})
+                logger.info('  Created DHCP range id=%s', dhcp_range.get('id'))
 
-        if self.cfg.dry_run:
-            return {
-                'dry_run': True,
-                'start':   start_ip,
-                'end':     end_ip,
-                'name':    f'{sdef.name}-dhcp',
-            }
-
-        body = {
-            'start': start_ip,
-            'end':   end_ip,
-            'space': self._space_id,
-            'name':  f'{sdef.name}-dhcp',
-            'comment': f'DHCP range for {sdef.name}',
-            'tags': {
-                'Site':    self.cfg.site,
-                'Purpose': sdef.purpose,
-                **self.cfg.extra_tags,
-            },
-        }
-        result = self.client.post('/dhcp/range', body)
-        dhcp_range = result.get('result', {})
-        logger.info('  Created DHCP range id=%s', dhcp_range.get('id'))
         return dhcp_range
 
     # ------------------------------------------------------------------
@@ -809,13 +915,14 @@ class SiteProvisioner:
             block['address'], block['cidr'], self.cfg.site,
         )
         if self.cfg.dry_run:
-            return {'dry_run': True, 'tags': updated_tags}
-
-        result = self.client.patch(
-            f'/{block["id"]}',
-            body={'tags': updated_tags},
-        )
-        return result.get('result', {})
+            updated_block = {'dry_run': True, 'tags': updated_tags}
+        else:
+            result = self.client.patch(
+                f'/{block["id"]}',
+                body={'tags': updated_tags},
+            )
+            updated_block = result.get('result', {})
+        return updated_block
 
     # ------------------------------------------------------------------
     # Step 6: Create DNS zone
@@ -848,50 +955,50 @@ class SiteProvisioner:
         )
 
         if self.cfg.dry_run:
-            return {'dry_run': True, 'fqdn': fqdn, 'view': self.cfg.dns_view}
-
-        # Check whether the zone already exists in this view
-        existing = self.client.get(
-            '/dns/auth_zone',
-            params={
-                '_filter': (
-                    f'fqdn=="{fqdn}." and '
-                    f'view=="{self._view_id}"'
-                ),
-            },
-        )
-        results = existing.get('results', [])
-        if results:
-            zone = results[0]
-            logger.info(
-                '  Zone already exists: %s  id=%s — skipping creation',
-                fqdn, zone.get('id'),
+            zone = {'dry_run': True, 'fqdn': fqdn, 'view': self.cfg.dns_view}
+        else:
+            # Check whether the zone already exists in this view
+            existing = self.client.get(
+                '/dns/auth_zone',
+                params={
+                    '_filter': (
+                        f'fqdn=="{fqdn}." and '
+                        f'view=="{self._view_id}"'
+                    ),
+                },
             )
-            self._zone_id = zone['id']
-            return zone
+            results = existing.get('results', [])
+            if results:
+                zone = results[0]
+                logger.info(
+                    '  Zone already exists: %s  id=%s — skipping creation',
+                    fqdn, zone.get('id'),
+                )
+                self._zone_id = zone['id']
+            else:
+                # Zone does not exist
+                if not self.cfg.create_zone:
+                    logger.error(
+                        'DNS zone "%s" does not exist in view "%s".  '
+                        'Set dns.create_zone: true in the YAML template or pass '
+                        '--create-zone on the CLI to create it automatically.',
+                        fqdn, self.cfg.dns_view,
+                    )
+                    sys.exit(1)
 
-        # Zone does not exist
-        if not self.cfg.create_zone:
-            logger.error(
-                'DNS zone "%s" does not exist in view "%s".  '
-                'Set dns.create_zone: true in the YAML template or pass '
-                '--create-zone on the CLI to create it automatically.',
-                fqdn, self.cfg.dns_view,
-            )
-            sys.exit(1)
+                # create_zone is True — create the zone
+                logger.info('  Zone not found — creating: %s  view=%s', fqdn, self.cfg.dns_view)
+                body = {
+                    'fqdn':         fqdn,
+                    'view':         self._view_id,
+                    'primary_type': 'cloud',
+                }
+                result = self.client.post('/dns/auth_zone', body)
+                zone = result.get('result', {})
+                self._zone_id = zone['id']
+                self._zone_created = True
+                logger.info('  Created zone id=%s', self._zone_id)
 
-        # create_zone is True — create the zone
-        logger.info('  Zone not found — creating: %s  view=%s', fqdn, self.cfg.dns_view)
-        body = {
-            'fqdn':         fqdn,
-            'view':         self._view_id,
-            'primary_type': 'cloud',
-        }
-        result = self.client.post('/dns/auth_zone', body)
-        zone = result.get('result', {})
-        self._zone_id = zone['id']
-        self._zone_created = True
-        logger.info('  Created zone id=%s', self._zone_id)
         return zone
 
     # ------------------------------------------------------------------
@@ -911,7 +1018,22 @@ class SiteProvisioner:
         Returns:
             DNS zone resource dict (existing or newly created), or a
             dry-run plan dict.
+
+        Note:
+            Only a single classful (/8, /16, /24) reverse zone is created.
+            For prefixes that span multiple reverse-zone boundaries (9–15
+            or 17–23) a warning is logged because PTRs for addresses
+            outside the created zone will have nowhere to live.  RFC 2317
+            classless delegation is not implemented.
         '''
+        if cidr not in (8, 16, 24) and not (cidr >= 24):
+            logger.warning(
+                'Subnet /%s spans multiple reverse zones; only %s will be '
+                'created — PTRs outside it will not resolve. Use /24 subnets '
+                'for full reverse coverage.',
+                cidr, reverse_zone_fqdn(subnet_addr, cidr),
+            )
+
         fqdn = reverse_zone_fqdn(subnet_addr, cidr)
         logger.info(
             '%sEnsuring reverse DNS zone: %s  view=%s',
@@ -920,32 +1042,32 @@ class SiteProvisioner:
         )
 
         if self.cfg.dry_run:
-            return {'dry_run': True, 'fqdn': fqdn, 'id': '(dry-run)'}
+            zone = {'dry_run': True, 'fqdn': fqdn, 'id': '(dry-run)'}
+        else:
+            existing = self.client.get(
+                '/dns/auth_zone',
+                params={
+                    '_filter': (
+                        f'fqdn=="{fqdn}." and '
+                        f'view=="{self._view_id}"'
+                    ),
+                },
+            )
+            results = existing.get('results', [])
+            if results:
+                zone = results[0]
+                logger.info('  Reverse zone already exists: %s  id=%s', fqdn, zone.get('id'))
+            else:
+                logger.info('  Creating reverse zone: %s', fqdn)
+                body = {
+                    'fqdn':         fqdn,
+                    'view':         self._view_id,
+                    'primary_type': 'cloud',
+                }
+                result = self.client.post('/dns/auth_zone', body)
+                zone = result.get('result', {})
+                logger.info('  Created reverse zone id=%s', zone.get('id'))
 
-        existing = self.client.get(
-            '/dns/auth_zone',
-            params={
-                '_filter': (
-                    f'fqdn=="{fqdn}." and '
-                    f'view=="{self._view_id}"'
-                ),
-            },
-        )
-        results = existing.get('results', [])
-        if results:
-            zone = results[0]
-            logger.info('  Reverse zone already exists: %s  id=%s', fqdn, zone.get('id'))
-            return zone
-
-        logger.info('  Creating reverse zone: %s', fqdn)
-        body = {
-            'fqdn':         fqdn,
-            'view':         self._view_id,
-            'primary_type': 'cloud',
-        }
-        result = self.client.post('/dns/auth_zone', body)
-        zone = result.get('result', {})
-        logger.info('  Created reverse zone id=%s', zone.get('id'))
         return zone
 
     # ------------------------------------------------------------------
@@ -982,17 +1104,31 @@ class SiteProvisioner:
                 )
                 continue
 
-            if self.cfg.dry_run:
-                base_addr = subnet.get('address', '<subnet-base>')
-            else:
-                base_addr = subnet.get('address', '')
+            base_addr = subnet.get('address', '')
+            cidr = subnet.get('cidr', self.cfg.subnet_size)
 
             offset = subnet_offsets.get(hdef.subnet, 1)
             subnet_offsets[hdef.subnet] = offset + 1
 
-            octets = base_addr.split('.')
-            octets[-1] = str(int(octets[-1]) + offset)
-            host_ip = '.'.join(octets)
+            # Derive the host IP as subnet_base + offset using integer maths so
+            # offsets that cross octet boundaries (larger subnets, many hosts)
+            # are handled correctly instead of overflowing the final octet.
+            try:
+                net = ipaddress.ip_network(f'{base_addr}/{cidr}', strict=False)
+                host_addr = net.network_address + offset
+            except ValueError as exc:
+                logger.warning(
+                    'Cannot compute IP for host %s in subnet %s: %s — skipping',
+                    hdef.hostname, hdef.subnet, exc,
+                )
+                continue
+            if host_addr not in net:
+                logger.warning(
+                    'Host %s offset %d falls outside subnet %s — skipping',
+                    hdef.hostname, offset, net,
+                )
+                continue
+            host_ip = str(host_addr)
 
             fqdn = f'{hdef.hostname}.{self.cfg.dns_zone}'
             logger.info(
@@ -1058,8 +1194,8 @@ class SiteProvisioner:
                 continue
             try:
                 logger.warning('  Rollback: deleting host %s  id=%s', h.get('fqdn', ''), host_id)
-                self.client.delete(f'/ipam/host/{host_id}')
-            except SystemExit:
+                self.client.delete(f'/{host_id}')
+            except UDDIError:
                 logger.error('  Rollback: failed to delete host id=%s', host_id)
                 errors += 1
 
@@ -1068,8 +1204,8 @@ class SiteProvisioner:
             try:
                 logger.warning('  Rollback: deleting DNS zone %s  id=%s',
                                partial.dns_zone_fqdn, partial.dns_zone_id)
-                self.client.delete(f'/dns/auth_zone/{partial.dns_zone_id}')
-            except SystemExit:
+                self.client.delete(f'/{partial.dns_zone_id}')
+            except UDDIError:
                 logger.error('  Rollback: failed to delete DNS zone id=%s', partial.dns_zone_id)
                 errors += 1
 
@@ -1080,8 +1216,8 @@ class SiteProvisioner:
                 continue
             try:
                 logger.warning('  Rollback: deleting reverse zone %s  id=%s', rz.get('fqdn', ''), rz_id)
-                self.client.delete(f'/dns/auth_zone/{rz_id}')
-            except SystemExit:
+                self.client.delete(f'/{rz_id}')
+            except UDDIError:
                 logger.error('  Rollback: failed to delete reverse zone id=%s', rz_id)
                 errors += 1
 
@@ -1093,24 +1229,24 @@ class SiteProvisioner:
             try:
                 logger.warning('  Rollback: deleting DHCP range %s-%s  id=%s',
                                r.get('start', ''), r.get('end', ''), range_id)
-                self.client.delete(f'/dhcp/range/{range_id}')
-            except SystemExit:
+                self.client.delete(f'/{range_id}')
+            except UDDIError:
                 logger.error('  Rollback: failed to delete DHCP range id=%s', range_id)
                 errors += 1
 
-        # 4. Delete subnets
+        # 5. Delete subnets
         for s in reversed(partial.subnets):
             subnet_id = s.get('id', '')
             if not subnet_id or subnet_id == '(dry-run)':
                 continue
             try:
                 logger.warning('  Rollback: deleting subnet %s  id=%s', s.get('address', ''), subnet_id)
-                self.client.delete(f'/ipam/subnet/{subnet_id}')
-            except SystemExit:
+                self.client.delete(f'/{subnet_id}')
+            except UDDIError:
                 logger.error('  Rollback: failed to delete subnet id=%s', subnet_id)
                 errors += 1
 
-        # 5. Reset block tags to available
+        # 6. Reset block tags to available
         block = self._original_block
         if block.get('id'):
             try:
@@ -1125,7 +1261,7 @@ class SiteProvisioner:
                 logger.warning('  Rollback: resetting block %s/%s tags to available',
                                block.get('address', ''), block.get('cidr', ''))
                 self.client.patch(f'/{block["id"]}', body={'tags': reset_tags})
-            except SystemExit:
+            except UDDIError:
                 logger.error('  Rollback: failed to reset block tags id=%s', block['id'])
                 errors += 1
 
@@ -1133,6 +1269,7 @@ class SiteProvisioner:
             logger.error('Rollback finished with %d error(s) — manual cleanup may be required', errors)
         else:
             logger.warning('Rollback complete.')
+        return
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -1165,71 +1302,44 @@ class SiteProvisioner:
                     result.skip_reason = 'already provisioned'
                     result.block_id = existing.get('id', '')
                     result.block_address = f'{existing["address"]}/{existing["cidr"]}'
-                    return result
                 else:
                     logger.error('%s — use --if-not-exists to skip', msg)
                     sys.exit(1)
+            else:
+                # Step 2: Find available block by tags
+                block = self.find_available_block()
+                result.block_id = block.get('id', '')
+                result.block_address = f'{block["address"]}/{block["cidr"]}'
 
-            # Step 2: Find available block by tags
-            block = self.find_available_block()
-            result.block_id = block.get('id', '')
-            result.block_address = f'{block["address"]}/{block["cidr"]}'
+                # Step 3: Resolve DNS view
+                self.resolve_dns_view()
 
-            # Step 3: Resolve DNS view
-            self.resolve_dns_view()
+                # Step 4: Carve subnets (result updated incrementally inside)
+                subnets = self.create_subnets(block, result)
 
-            # Step 4: Carve subnets (returns dict of name -> resource)
-            subnets = self.create_subnets(block)
-            result.subnets = [
-                {
-                    'address': f'{s.get("address")}/{s.get("cidr")}',
-                    'name':    s.get('name', ''),
-                    'id':      s.get('id', '(dry-run)'),
-                }
-                for s in subnets.values()
-            ]
-            result.dhcp_ranges = [
-                {
-                    'id':    s.get('_dhcp_range', {}).get('id', '(dry-run)'),
-                    'start': s.get('_dhcp_range', {}).get('start', ''),
-                    'end':   s.get('_dhcp_range', {}).get('end', ''),
-                    'name':  s.get('_dhcp_range', {}).get('name', ''),
-                }
-                for s in subnets.values()
-                if s.get('_dhcp_range')
-            ]
-            result.reverse_zones = [
-                {
-                    'id':   s.get('_reverse_zone', {}).get('id', '(dry-run)'),
-                    'fqdn': s.get('_reverse_zone', {}).get('fqdn', ''),
-                }
-                for s in subnets.values()
-                if s.get('_reverse_zone')
-            ]
+                # Step 5: Update block status
+                self.update_block_status(block)
 
-            # Step 5: Update block status
-            self.update_block_status(block)
+                # Step 6: Create DNS zone
+                zone = self.create_dns_zone()
+                result.dns_zone_id = zone.get('id', '(dry-run)')
+                result.dns_zone_fqdn = zone.get('fqdn', self.cfg.dns_zone)
 
-            # Step 6: Create DNS zone
-            zone = self.create_dns_zone()
-            result.dns_zone_id = zone.get('id', '(dry-run)')
-            result.dns_zone_fqdn = zone.get('fqdn', self.cfg.dns_zone)
-
-            # Step 7: Provision hosts
-            hosts = self.provision_hosts(subnets)
-            result.hosts = [
-                {
-                    'fqdn':     h.get('fqdn', ''),
-                    'ip':       h.get('ip', ''),
-                    'hostname': h.get('hostname', ''),
-                    'id':       h.get('id', '(dry-run)'),
-                }
-                for h in hosts
-            ]
+                # Step 7: Provision hosts
+                hosts = self.provision_hosts(subnets)
+                result.hosts = [
+                    {
+                        'fqdn':     h.get('fqdn', ''),
+                        'ip':       h.get('ip', ''),
+                        'hostname': h.get('hostname', ''),
+                        'id':       h.get('id', '(dry-run)'),
+                    }
+                    for h in hosts
+                ]
 
         except (SystemExit, Exception) as exc:
             if not self.cfg.dry_run and not self.cfg.no_rollback:
-                logger.error('Provisioning failed — initiating rollback')
+                logger.error('Provisioning failed (%r) — initiating rollback', exc)
                 self._rollback(result)
             raise SystemExit(1) from exc
 
@@ -1253,30 +1363,30 @@ def print_result(result: ProvisionResult) -> None:
         print(f'Site already provisioned — skipped ({result.skip_reason})')
         print(f'  Address block : {result.block_address}  id={result.block_id}')
         print('=' * 60)
-        return
-
-    mode = '[DRY-RUN] ' if result.dry_run else ''
-    print()
-    print('=' * 60)
-    print(f'{mode}Site Provisioning Summary')
-    print('=' * 60)
-    print(f'  Address block : {result.block_address}')
-    print()
-    print('  Subnets:')
-    for s in result.subnets:
-        print(f'    {s["address"]:<22}  {s["name"]:<28}  id={s["id"]}')
-    print()
-    print(f'  DNS zone      : {result.dns_zone_fqdn}  id={result.dns_zone_id}')
-    print()
-    print('  Hosts:')
-    for h in result.hosts:
-        print(f'    {h["fqdn"]:<45}  -> {h["ip"]:<16}  id={h["id"]}')
-    print('=' * 60)
-    if result.dry_run:
-        print('DRY-RUN complete. Rerun without --dry-run to execute.')
     else:
-        print('Provisioning complete.')
-    print()
+        mode = '[DRY-RUN] ' if result.dry_run else ''
+        print()
+        print('=' * 60)
+        print(f'{mode}Site Provisioning Summary')
+        print('=' * 60)
+        print(f'  Address block : {result.block_address}')
+        print()
+        print('  Subnets:')
+        for s in result.subnets:
+            print(f'    {s["address"]:<22}  {s["name"]:<28}  id={s["id"]}')
+        print()
+        print(f'  DNS zone      : {result.dns_zone_fqdn}  id={result.dns_zone_id}')
+        print()
+        print('  Hosts:')
+        for h in result.hosts:
+            print(f'    {h["fqdn"]:<45}  -> {h["ip"]:<16}  id={h["id"]}')
+        print('=' * 60)
+        if result.dry_run:
+            print('DRY-RUN complete. Rerun without --dry-run to execute.')
+        else:
+            print('Provisioning complete.')
+        print()
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -1530,6 +1640,7 @@ def main() -> None:
         print(json.dumps(dataclasses.asdict(result)))
     else:
         print_result(result)
+    return
 
 
 if __name__ == '__main__':
