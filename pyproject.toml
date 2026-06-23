@@ -22,6 +22,7 @@ query-block         = "query_block:main"
 provision-dns       = "provision_dns:main"
 decommission-dns    = "decommission_dns:main"
 query-dns           = "query_dns:main"
+retag-block         = "retag_block:main"
 batch-provision     = "batch_provision:main"
 uddi-web            = "web_server:main"
 
