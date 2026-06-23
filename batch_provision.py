@@ -83,7 +83,10 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from uddi_utils import setup_logging
+
+import yaml
+
+from uddi_utils import setup_logging, template_type
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +123,8 @@ class BatchConfig:
     verbose: bool = False
     debug: bool = False
     stop_on_error: bool = False
+    api_key: str = ''
+    no_verify_ssl: bool = False
 
 
 @dataclass
@@ -192,46 +197,81 @@ def resolve_templates(
 # Per-template execution
 # ---------------------------------------------------------------------------
 
-def run_template(template_path: str, cfg: BatchConfig) -> tuple:
+SCRIPTS_BY_TYPE = {
+    'site':          {'provision': 'provision_site.py', 'decommission': 'decommission_site.py'},
+    'address-block': {'provision': 'provision_block.py', 'decommission': 'decommission_block.py'},
+    'dns':           {'provision': 'provision_dns.py', 'decommission': 'decommission_dns.py'},
+}
+
+
+def _template_type_of(template_path: str) -> str:
     '''
-    Execute provision_site.py or decommission_site.py for a single template.
+    Best-effort read of a template file's type for script selection.
 
     Args:
-        template_path: Path to the YAML site template
+        template_path: Path to a YAML template file
+
+    Returns:
+        'site' | 'address-block' | 'dns' | 'unknown' (unknown on any error)
+    '''
+    ttype = 'unknown'
+    try:
+        with open(template_path, 'r') as fh:
+            data = yaml.safe_load(fh)
+        if isinstance(data, dict):
+            ttype = template_type(data)
+    except (OSError, yaml.YAMLError):
+        ttype = 'unknown'
+    return ttype
+
+
+def run_template(template_path: str, cfg: BatchConfig) -> tuple:
+    '''
+    Execute the provision/decommission script matching the template's type.
+
+    Args:
+        template_path: Path to the YAML template
         cfg:           BatchConfig controlling flags and script choice
 
     Returns:
         Tuple of (returncode: int, stdout: str, stderr: str)
     '''
-    script_name = (
-        'provision_site.py' if cfg.action == 'provision'
-        else 'decommission_site.py'
-    )
-    script_path = os.path.join(SCRIPT_DIR, script_name)
+    ttype = _template_type_of(template_path)
+    script_name = SCRIPTS_BY_TYPE.get(ttype, {}).get(cfg.action, '')
+    if not script_name:
+        result = (1, '', f'{cfg.action} not supported for template type {ttype!r}: {template_path}')
+    else:
+        script_path = os.path.join(SCRIPT_DIR, script_name)
+        cmd = [sys.executable, script_path, '-t', template_path, '-c', cfg.config]
 
-    cmd = [sys.executable, script_path, '-t', template_path, '-c', cfg.config]
+        if cfg.api_key:
+            cmd.extend(['--api-key', cfg.api_key])
+        if cfg.no_verify_ssl:
+            cmd.append('--no-verify-ssl')
 
-    if cfg.dry_run:
-        cmd.append('--dry-run')
-    if cfg.debug:
-        cmd.append('-d')
-    elif cfg.verbose:
-        cmd.append('-v')
+        if cfg.dry_run:
+            cmd.append('--dry-run')
+        if cfg.debug:
+            cmd.append('-d')
+        elif cfg.verbose:
+            cmd.append('-v')
 
-    if cfg.action == 'provision' and cfg.no_rollback:
-        cmd.append('--no-rollback')
+        if cfg.action == 'provision' and cfg.no_rollback:
+            cmd.append('--no-rollback')
 
-    if cfg.action == 'decommission' and cfg.force:
-        cmd.append('--force')
+        if cfg.action == 'decommission' and cfg.force:
+            cmd.append('--force')
 
-    logger.debug('Running: %s', ' '.join(cmd))
+        logger.debug('Running: %s', ' '.join(cmd))
 
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-    )
-    return (proc.returncode, proc.stdout, proc.stderr)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+        )
+        result = (proc.returncode, proc.stdout, proc.stderr)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +368,7 @@ def print_batch_result(result: BatchResult, action: str, dry_run: bool) -> None:
     if dry_run:
         print('DRY-RUN complete. Rerun without --dry-run to execute.')
     print()
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +450,18 @@ def parseargs() -> argparse.Namespace:
         metavar='FILE',
         help='Path to INI configuration file (default: uddi.ini in current working directory)',
     )
+    parser.add_argument(
+        '--api-key',
+        default='',
+        metavar='KEY',
+        help='API key forwarded to each child script (overrides INI / env vars)',
+    )
+    parser.add_argument(
+        '--no-verify-ssl',
+        action='store_true',
+        default=False,
+        help='Forward --no-verify-ssl to each child script (lab / self-signed certs)',
+    )
 
     log_grp = parser.add_mutually_exclusive_group()
     log_grp.add_argument(
@@ -465,6 +518,8 @@ def main() -> None:
         verbose=args.verbose,
         debug=args.debug,
         stop_on_error=args.stop_on_error,
+        api_key=args.api_key,
+        no_verify_ssl=args.no_verify_ssl,
     )
 
     result = batch_run(cfg)
@@ -472,6 +527,7 @@ def main() -> None:
 
     if result.failed:
         sys.exit(1)
+    return
 
 
 if __name__ == '__main__':
