@@ -1038,10 +1038,10 @@ def main() -> None:
     # --json no longer bypasses confirmation on its own: a non-interactive run
     # that makes destructive changes must opt in with --force.
     if not cfg.dry_run and not cfg.force:
-        if args.json_output:
+        if args.json_output or not sys.stdin.isatty():
             logger.error(
                 'Refusing to decommission non-interactively without --force. '
-                'Re-run with --force (and --json) or --dry-run.'
+                'Re-run with --force, or use --dry-run to preview.'
             )
             sys.exit(1)
         if not confirm_decommission(cfg):

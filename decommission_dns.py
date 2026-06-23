@@ -386,10 +386,10 @@ def main() -> None:
         print(f'\n{mode_label}Decommissioning DNS: {args.template}')
 
     if not cfg.dry_run and not cfg.force:
-        if args.json_output:
+        if args.json_output or not sys.stdin.isatty():
             logger.error(
                 'Refusing to decommission non-interactively without --force. '
-                'Re-run with --force (and --json) or --dry-run.'
+                'Re-run with --force, or use --dry-run to preview.'
             )
             sys.exit(1)
         if not confirm_decommission(cfg):

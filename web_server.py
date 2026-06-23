@@ -475,6 +475,7 @@ def _stream_script(cmd: list) -> Response:
         logger.debug('Streaming: %s', ' '.join(cmd))
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,   # streamed scripts are non-interactive
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
