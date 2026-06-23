@@ -1151,12 +1151,17 @@ class SiteProvisioner:
                 'name':    fqdn,
                 'comment': hdef.comment or f'{self.cfg.site.capitalize()} - {hdef.hostname}',
                 'addresses': [{
-                    'address':     host_ip,
-                    'space':       self._space_id,
-                    'enable_dhcp': False,
+                    'address': host_ip,
+                    'space':   self._space_id,
                 }],
                 'auto_generate_records': True,
-                'dns_zone': self._zone_id,   # zone ID, not view ID
+                # host_names drives A/PTR generation; zone is the auth-zone ID.
+                # (The IpamHost schema has no dns_zone/enable_dhcp fields.)
+                'host_names': [{
+                    'name':         fqdn,
+                    'zone':         self._zone_id,
+                    'primary_name': True,
+                }],
             }
             result = self.client.post('/ipam/host', body)
             host = result.get('result', {})
