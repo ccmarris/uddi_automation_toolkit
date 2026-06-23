@@ -1,0 +1,24 @@
+# Example address-block template: an EMEA production pool with nested children.
+type: address-block
+name: emea-prod-pool
+
+address_blocks:
+  - address: 10.20.0.0
+    cidr: 16
+    region: EMEA
+    environment: production
+    status: available
+    location: "EMEA"
+    comment: "EMEA production supernet"
+    tags:
+      Owner: network-team
+    children:
+      - address: 10.20.0.0
+        cidr: 18
+        comment: "EMEA prod - zone A"
+      - address: 10.20.64.0
+        cidr: 18
+        comment: "EMEA prod - zone B"
+
+tags:
+  CostCentre: CC-EMEA-001

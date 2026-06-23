@@ -1,0 +1,28 @@
+# Example dns template: a forward zone with assorted record types.
+type: dns
+
+zones:
+  - fqdn: corp.example.com
+    kind: forward
+    create: true
+    comment: "Corporate forward zone"
+    records:
+      - name: www
+        type: A
+        rdata: 10.20.1.10
+        ttl: 3600
+      - name: app
+        type: A
+        rdata: 10.20.1.11
+      - name: ftp
+        type: CNAME
+        rdata: www.corp.example.com
+      - name: mail
+        type: MX
+        rdata: {preference: 10, exchange: mail.corp.example.com}
+      - name: "@"
+        type: TXT
+        rdata: "v=spf1 mx -all"
+
+tags:
+  Owner: dns-team
