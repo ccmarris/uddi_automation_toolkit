@@ -24,6 +24,9 @@
       POST /api/provision            Stream provision execution (SSE)
       POST /api/decommission         Stream decommission execution (SSE)
       POST /api/query                Stream query execution (SSE)
+      POST /api/query-json           Run query and return structured JSON
+      POST /api/validate             Validate template schema (no API)
+      POST /api/drift                Compare template against live API state
       GET  /api/config               Return non-secret config values
       GET  /api/health               Health check
 
@@ -96,8 +99,23 @@ import shutil
 import subprocess
 import sys
 
+import yaml
+
 from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
-from uddi_utils import env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, validate_template
+from uddi_utils import detect_drift, env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, template_type, validate_template
+
+# Maps (action, template type) to the backend script that handles it.
+SCRIPTS_BY_TYPE: dict = {
+    'site':          {'provision': 'provision_site.py',
+                      'decommission': 'decommission_site.py',
+                      'query': 'query_site.py'},
+    'address-block': {'provision': 'provision_block.py',
+                      'decommission': 'decommission_block.py',
+                      'query': 'query_block.py'},
+    'dns':           {'provision': 'provision_dns.py',
+                      'decommission': 'decommission_dns.py',
+                      'query': 'query_dns.py'},
+}
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +180,41 @@ def template_path(rel: str) -> str:
     return os.path.join(TEMPLATES_DIR, rel)
 
 
+def template_type_of(fpath: str) -> str:
+    '''
+    Best-effort read of a template file's type for listing/dispatch.
+
+    Args:
+        fpath: Absolute path to a YAML template file
+
+    Returns:
+        'site' | 'address-block' | 'dns' | 'unknown' (unknown on any error)
+    '''
+    ttype = 'unknown'
+    try:
+        with open(fpath, 'r') as fh:
+            data = yaml.safe_load(fh)
+        if isinstance(data, dict):
+            ttype = template_type(data)
+    except (OSError, yaml.YAMLError):
+        ttype = 'unknown'
+    return ttype
+
+
+def script_for(action: str, ttype: str) -> str:
+    '''
+    Resolve the backend script for an action and template type.
+
+    Args:
+        action: 'provision' | 'decommission' | 'query'
+        ttype:  Template type from template_type()
+
+    Returns:
+        Script filename, or '' if the combination is unsupported
+    '''
+    return SCRIPTS_BY_TYPE.get(ttype, {}).get(action, '')
+
+
 # ---------------------------------------------------------------------------
 # Routes — static files
 # ---------------------------------------------------------------------------
@@ -208,14 +261,16 @@ def list_templates():
                     fpath = os.path.join(dirpath, fname)
                     rel = os.path.relpath(fpath, TEMPLATES_DIR)
                     entries.append({
-                        'name':     rel.replace(os.sep, '/'),
-                        'type':     'file',
-                        'modified': os.path.getmtime(fpath),
+                        'name':      rel.replace(os.sep, '/'),
+                        'type':      'file',
+                        'tmpl_type': template_type_of(fpath),
+                        'modified':  os.path.getmtime(fpath),
                     })
-        return jsonify(entries)
+        response = (jsonify(entries), 200)
     except OSError as exc:
         logger.error('Failed to list templates: %s', exc)
-        return jsonify({'error': str(exc)}), 500
+        response = (jsonify({'error': str(exc)}), 500)
+    return response
 
 
 @app.route('/api/templates/<path:name>', methods=['GET'])
@@ -224,18 +279,19 @@ def get_template(name: str):
     try:
         rel = safe_template_path(name)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    fpath = template_path(rel)
-    if not os.path.isfile(fpath):
-        return jsonify({'error': f'Template not found: {rel}'}), 404
-
-    try:
-        with open(fpath, 'r') as fh:
-            content = fh.read()
-        return jsonify({'name': rel.replace(os.sep, '/'), 'content': content})
-    except OSError as exc:
-        return jsonify({'error': str(exc)}), 500
+        response = (jsonify({'error': str(exc)}), 400)
+    else:
+        fpath = template_path(rel)
+        if not os.path.isfile(fpath):
+            response = (jsonify({'error': f'Template not found: {rel}'}), 404)
+        else:
+            try:
+                with open(fpath, 'r') as fh:
+                    content = fh.read()
+                response = (jsonify({'name': rel.replace(os.sep, '/'), 'content': content}), 200)
+            except OSError as exc:
+                response = (jsonify({'error': str(exc)}), 500)
+    return response
 
 
 @app.route('/api/templates/<path:name>', methods=['POST'])
@@ -244,22 +300,23 @@ def save_template(name: str):
     try:
         rel = safe_template_path(name)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    data = request.get_json(silent=True)
-    if not data or 'content' not in data:
-        return jsonify({'error': 'Request body must be JSON with a "content" field'}), 400
-
-    fpath = template_path(rel)
-    try:
-        os.makedirs(os.path.dirname(fpath), exist_ok=True)
-        with open(fpath, 'w') as fh:
-            fh.write(data['content'])
-        logger.info('Saved template: %s', fpath)
-        return jsonify({'name': rel.replace(os.sep, '/'), 'saved': True})
-    except OSError as exc:
-        logger.error('Failed to save template %s: %s', rel, exc)
-        return jsonify({'error': str(exc)}), 500
+        response = (jsonify({'error': str(exc)}), 400)
+    else:
+        data = request.get_json(silent=True)
+        if not data or 'content' not in data:
+            response = (jsonify({'error': 'Request body must be JSON with a "content" field'}), 400)
+        else:
+            fpath = template_path(rel)
+            try:
+                os.makedirs(os.path.dirname(fpath), exist_ok=True)
+                with open(fpath, 'w') as fh:
+                    fh.write(data['content'])
+                logger.info('Saved template: %s', fpath)
+                response = (jsonify({'name': rel.replace(os.sep, '/'), 'saved': True}), 200)
+            except OSError as exc:
+                logger.error('Failed to save template %s: %s', rel, exc)
+                response = (jsonify({'error': str(exc)}), 500)
+    return response
 
 
 @app.route('/api/templates/<path:name>', methods=['DELETE'])
@@ -268,23 +325,24 @@ def delete_template(name: str):
     try:
         rel = safe_template_path(name)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    fpath = template_path(rel)
-    if not os.path.isfile(fpath):
-        return jsonify({'error': f'Template not found: {rel}'}), 404
-
-    try:
-        os.remove(fpath)
-        logger.info('Deleted template: %s', fpath)
-        # Remove the parent directory if it is now empty
-        parent = os.path.dirname(fpath)
-        if parent != TEMPLATES_DIR and not os.listdir(parent):
-            os.rmdir(parent)
-        return jsonify({'name': rel.replace(os.sep, '/'), 'deleted': True})
-    except OSError as exc:
-        logger.error('Failed to delete template %s: %s', rel, exc)
-        return jsonify({'error': str(exc)}), 500
+        response = (jsonify({'error': str(exc)}), 400)
+    else:
+        fpath = template_path(rel)
+        if not os.path.isfile(fpath):
+            response = (jsonify({'error': f'Template not found: {rel}'}), 404)
+        else:
+            try:
+                os.remove(fpath)
+                logger.info('Deleted template: %s', fpath)
+                # Remove the parent directory if it is now empty
+                parent = os.path.dirname(fpath)
+                if parent != TEMPLATES_DIR and not os.listdir(parent):
+                    os.rmdir(parent)
+                response = (jsonify({'name': rel.replace(os.sep, '/'), 'deleted': True}), 200)
+            except OSError as exc:
+                logger.error('Failed to delete template %s: %s', rel, exc)
+                response = (jsonify({'error': str(exc)}), 500)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -296,24 +354,27 @@ def create_folder():
     '''Create a new directory under the templates root.'''
     data = request.get_json(silent=True)
     if not data or not data.get('path'):
-        return jsonify({'error': 'Request body must include "path"'}), 400
-    try:
-        rel = safe_template_path(data['path'].rstrip('/') + '/_check')
-        # safe_template_path validates the path; strip the dummy filename
-        rel_dir = os.path.dirname(rel)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    dpath = os.path.join(TEMPLATES_DIR, rel_dir)
-    if os.path.exists(dpath):
-        return jsonify({'error': f'Folder already exists: {rel_dir}'}), 409
-    try:
-        os.makedirs(dpath)
-        logger.info('Created folder: %s', dpath)
-        return jsonify({'path': rel_dir.replace(os.sep, '/'), 'created': True})
-    except OSError as exc:
-        logger.error('Failed to create folder %s: %s', rel_dir, exc)
-        return jsonify({'error': str(exc)}), 500
+        response = (jsonify({'error': 'Request body must include "path"'}), 400)
+    else:
+        try:
+            rel = safe_template_path(data['path'].rstrip('/') + '/_check')
+            # safe_template_path validates the path; strip the dummy filename
+            rel_dir = os.path.dirname(rel)
+        except ValueError as exc:
+            response = (jsonify({'error': str(exc)}), 400)
+        else:
+            dpath = os.path.join(TEMPLATES_DIR, rel_dir)
+            if os.path.exists(dpath):
+                response = (jsonify({'error': f'Folder already exists: {rel_dir}'}), 409)
+            else:
+                try:
+                    os.makedirs(dpath)
+                    logger.info('Created folder: %s', dpath)
+                    response = (jsonify({'path': rel_dir.replace(os.sep, '/'), 'created': True}), 200)
+                except OSError as exc:
+                    logger.error('Failed to create folder %s: %s', rel_dir, exc)
+                    response = (jsonify({'error': str(exc)}), 500)
+    return response
 
 
 @app.route('/api/folders/<path:name>', methods=['PATCH'])
@@ -321,33 +382,36 @@ def rename_folder(name: str):
     '''Rename (or move) a directory within the templates root.'''
     data = request.get_json(silent=True)
     if not data or not data.get('new_path'):
-        return jsonify({'error': 'Request body must include "new_path"'}), 400
-    try:
-        rel_src = safe_template_path(name.rstrip('/') + '/_check')
-        rel_src = os.path.dirname(rel_src)
-        rel_dst = safe_template_path(data['new_path'].rstrip('/') + '/_check')
-        rel_dst = os.path.dirname(rel_dst)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    src = os.path.join(TEMPLATES_DIR, rel_src)
-    dst = os.path.join(TEMPLATES_DIR, rel_dst)
-    if not os.path.isdir(src):
-        return jsonify({'error': f'Folder not found: {rel_src}'}), 404
-    if os.path.exists(dst):
-        return jsonify({'error': f'Destination already exists: {rel_dst}'}), 409
-    try:
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.move(src, dst)
-        logger.info('Renamed folder %s -> %s', src, dst)
-        return jsonify({
-            'old_path': rel_src.replace(os.sep, '/'),
-            'new_path': rel_dst.replace(os.sep, '/'),
-            'renamed': True,
-        })
-    except OSError as exc:
-        logger.error('Failed to rename folder %s: %s', rel_src, exc)
-        return jsonify({'error': str(exc)}), 500
+        response = (jsonify({'error': 'Request body must include "new_path"'}), 400)
+    else:
+        try:
+            rel_src = safe_template_path(name.rstrip('/') + '/_check')
+            rel_src = os.path.dirname(rel_src)
+            rel_dst = safe_template_path(data['new_path'].rstrip('/') + '/_check')
+            rel_dst = os.path.dirname(rel_dst)
+        except ValueError as exc:
+            response = (jsonify({'error': str(exc)}), 400)
+        else:
+            src = os.path.join(TEMPLATES_DIR, rel_src)
+            dst = os.path.join(TEMPLATES_DIR, rel_dst)
+            if not os.path.isdir(src):
+                response = (jsonify({'error': f'Folder not found: {rel_src}'}), 404)
+            elif os.path.exists(dst):
+                response = (jsonify({'error': f'Destination already exists: {rel_dst}'}), 409)
+            else:
+                try:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.move(src, dst)
+                    logger.info('Renamed folder %s -> %s', src, dst)
+                    response = (jsonify({
+                        'old_path': rel_src.replace(os.sep, '/'),
+                        'new_path': rel_dst.replace(os.sep, '/'),
+                        'renamed': True,
+                    }), 200)
+                except OSError as exc:
+                    logger.error('Failed to rename folder %s: %s', rel_src, exc)
+                    response = (jsonify({'error': str(exc)}), 500)
+    return response
 
 
 @app.route('/api/folders/<path:name>', methods=['DELETE'])
@@ -360,29 +424,31 @@ def delete_folder(name: str):
         rel = safe_template_path(name.rstrip('/') + '/_check')
         rel_dir = os.path.dirname(rel)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        response = (jsonify({'error': str(exc)}), 400)
+    else:
+        dpath = os.path.join(TEMPLATES_DIR, rel_dir)
+        if not os.path.isdir(dpath):
+            response = (jsonify({'error': f'Folder not found: {rel_dir}'}), 404)
+        else:
+            recursive = request.args.get('recursive', '').lower() == 'true'
+            contents = []
+            for _, _, files in os.walk(dpath):
+                contents.extend(files)
 
-    dpath = os.path.join(TEMPLATES_DIR, rel_dir)
-    if not os.path.isdir(dpath):
-        return jsonify({'error': f'Folder not found: {rel_dir}'}), 404
-
-    recursive = request.args.get('recursive', '').lower() == 'true'
-    contents = []
-    for _, _, files in os.walk(dpath):
-        contents.extend(files)
-
-    if contents and not recursive:
-        return jsonify({
-            'error': f'Folder is not empty ({len(contents)} file(s)). '
-                     'Pass ?recursive=true to delete with all contents.',
-        }), 409
-    try:
-        shutil.rmtree(dpath)
-        logger.info('Deleted folder: %s', dpath)
-        return jsonify({'path': rel_dir.replace(os.sep, '/'), 'deleted': True})
-    except OSError as exc:
-        logger.error('Failed to delete folder %s: %s', rel_dir, exc)
-        return jsonify({'error': str(exc)}), 500
+            if contents and not recursive:
+                response = (jsonify({
+                    'error': f'Folder is not empty ({len(contents)} file(s)). '
+                             'Pass ?recursive=true to delete with all contents.',
+                }), 409)
+            else:
+                try:
+                    shutil.rmtree(dpath)
+                    logger.info('Deleted folder: %s', dpath)
+                    response = (jsonify({'path': rel_dir.replace(os.sep, '/'), 'deleted': True}), 200)
+                except OSError as exc:
+                    logger.error('Failed to delete folder %s: %s', rel_dir, exc)
+                    response = (jsonify({'error': str(exc)}), 500)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +511,7 @@ def provision():
         verbose   (bool) — default True
         create_zone         (bool) — optional
         create_reverse_zone (bool) — optional
+        if_not_exists       (bool) — skip if site already provisioned
     '''
     data = request.get_json(silent=True) or {}
     template_name = data.get('template', '')
@@ -454,28 +521,38 @@ def provision():
     try:
         rel = safe_template_path(template_name)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        response = (jsonify({'error': str(exc)}), 400)
+    else:
+        tmpl_path = template_path(rel)
+        ttype = template_type_of(tmpl_path)
+        script = script_for('provision', ttype)
+        if not os.path.isfile(tmpl_path):
+            response = (jsonify({'error': f'Template not found: {rel}'}), 404)
+        elif not script:
+            response = (jsonify({'error': f'provision is not supported for template type {ttype!r}'}), 400)
+        else:
+            cmd = [
+                sys.executable,
+                os.path.join(SCRIPT_DIR, script),
+                '-t', tmpl_path,
+                '-c', CONFIG_FILE,
+            ]
+            if dry_run:
+                cmd.append('--dry-run')
+            if verbose:
+                cmd.append('-v')
+            # Site-only provisioning toggles
+            if ttype == 'site':
+                if data.get('create_zone'):
+                    cmd.append('--create-zone')
+                if data.get('create_reverse_zone'):
+                    cmd.append('--create-reverse-zone')
+                if data.get('if_not_exists'):
+                    cmd.append('--if-not-exists')
 
-    tmpl_path = template_path(rel)
-    if not os.path.isfile(tmpl_path):
-        return jsonify({'error': f'Template not found: {safe}'}), 404
+            response = _stream_script(cmd)
 
-    cmd = [
-        sys.executable,
-        os.path.join(SCRIPT_DIR, 'provision_site.py'),
-        '-t', tmpl_path,
-        '-c', CONFIG_FILE,
-    ]
-    if dry_run:
-        cmd.append('--dry-run')
-    if verbose:
-        cmd.append('-v')
-    if data.get('create_zone'):
-        cmd.append('--create-zone')
-    if data.get('create_reverse_zone'):
-        cmd.append('--create-reverse-zone')
-
-    return _stream_script(cmd)
+    return response
 
 
 @app.route('/api/decommission', methods=['POST'])
@@ -499,30 +576,38 @@ def decommission():
     try:
         rel = safe_template_path(template_name)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        response = (jsonify({'error': str(exc)}), 400)
+    else:
+        tmpl_path = template_path(rel)
+        ttype = template_type_of(tmpl_path)
+        script = script_for('decommission', ttype)
+        if not os.path.isfile(tmpl_path):
+            response = (jsonify({'error': f'Template not found: {rel}'}), 404)
+        elif not script:
+            response = (jsonify({'error': f'decommission is not supported for template type {ttype!r}'}), 400)
+        else:
+            cmd = [
+                sys.executable,
+                os.path.join(SCRIPT_DIR, script),
+                '-t', tmpl_path,
+                '-c', CONFIG_FILE,
+            ]
+            if dry_run:
+                cmd.append('--dry-run')
+            if verbose:
+                cmd.append('-v')
+            if data.get('force'):
+                cmd.append('--force')
+            # Site-only decommission toggles
+            if ttype == 'site':
+                if data.get('keep_zone'):
+                    cmd.append('--keep-zone')
+                if data.get('final_status') in ('decommissioned', 'available'):
+                    cmd.extend(['--final-status', data['final_status']])
 
-    tmpl_path = template_path(rel)
-    if not os.path.isfile(tmpl_path):
-        return jsonify({'error': f'Template not found: {safe}'}), 404
+            response = _stream_script(cmd)
 
-    cmd = [
-        sys.executable,
-        os.path.join(SCRIPT_DIR, 'decommission_site.py'),
-        '-t', tmpl_path,
-        '-c', CONFIG_FILE,
-    ]
-    if dry_run:
-        cmd.append('--dry-run')
-    if verbose:
-        cmd.append('-v')
-    if data.get('force'):
-        cmd.append('--force')
-    if data.get('keep_zone'):
-        cmd.append('--keep-zone')
-    if data.get('final_status') in ('decommissioned', 'available'):
-        cmd.extend(['--final-status', data['final_status']])
-
-    return _stream_script(cmd)
+    return response
 
 
 @app.route('/api/query', methods=['POST'])
@@ -543,24 +628,30 @@ def query():
     try:
         rel = safe_template_path(template_name)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        response = (jsonify({'error': str(exc)}), 400)
+    else:
+        tmpl_path = template_path(rel)
+        ttype = template_type_of(tmpl_path)
+        script = script_for('query', ttype)
+        if not os.path.isfile(tmpl_path):
+            response = (jsonify({'error': f'Template not found: {rel}'}), 404)
+        elif not script:
+            response = (jsonify({'error': f'query is not supported for template type {ttype!r}'}), 400)
+        else:
+            cmd = [
+                sys.executable,
+                os.path.join(SCRIPT_DIR, script),
+                '-t', tmpl_path,
+                '-c', CONFIG_FILE,
+            ]
+            if verbose and not json_output:
+                cmd.append('-v')
+            if json_output:
+                cmd.append('--json')
 
-    tmpl_path = template_path(rel)
-    if not os.path.isfile(tmpl_path):
-        return jsonify({'error': f'Template not found: {safe}'}), 404
+            response = _stream_script(cmd)
 
-    cmd = [
-        sys.executable,
-        os.path.join(SCRIPT_DIR, 'query_site.py'),
-        '-t', tmpl_path,
-        '-c', CONFIG_FILE,
-    ]
-    if verbose and not json_output:
-        cmd.append('-v')
-    if json_output:
-        cmd.append('--json')
-
-    return _stream_script(cmd)
+    return response
 
 
 @app.route('/api/query-json', methods=['POST'])
@@ -577,29 +668,35 @@ def query_json():
     try:
         rel = safe_template_path(template_name)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        response = (jsonify({'error': str(exc)}), 400)
+    else:
+        tmpl_path = template_path(rel)
+        ttype = template_type_of(tmpl_path)
+        script = script_for('query', ttype)
+        if not os.path.isfile(tmpl_path):
+            response = (jsonify({'error': f'Template not found: {rel}'}), 404)
+        elif not script:
+            response = (jsonify({'error': f'query is not supported for template type {ttype!r}'}), 400)
+        else:
+            cmd = [
+                sys.executable,
+                os.path.join(SCRIPT_DIR, script),
+                '-t', tmpl_path,
+                '-c', CONFIG_FILE,
+                '--json',
+            ]
 
-    tmpl_path = template_path(rel)
-    if not os.path.isfile(tmpl_path):
-        return jsonify({'error': f'Template not found: {safe}'}), 404
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                err = proc.stderr.strip() or proc.stdout.strip()
+                response = (jsonify({'error': err}), 500)
+            else:
+                try:
+                    response = (jsonify(json.loads(proc.stdout)), 200)
+                except json.JSONDecodeError:
+                    response = (jsonify({'error': f'Unexpected output from {script}', 'raw': proc.stdout}), 500)
 
-    cmd = [
-        sys.executable,
-        os.path.join(SCRIPT_DIR, 'query_site.py'),
-        '-t', tmpl_path,
-        '-c', CONFIG_FILE,
-        '--json',
-    ]
-
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip()
-        return jsonify({'error': err}), 500
-
-    try:
-        return jsonify(json.loads(proc.stdout))
-    except json.JSONDecodeError:
-        return jsonify({'error': 'Unexpected output from query_site.py', 'raw': proc.stdout}), 500
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -617,22 +714,84 @@ def validate_template_route():
     data = request.get_json(silent=True) or {}
     name = data.get('template', '').strip()
     if not name:
-        return jsonify({'error': 'template name required'}), 400
-    try:
-        rel = safe_template_path(name)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-    fpath = os.path.join(TEMPLATES_DIR, rel)
-    if not os.path.isfile(fpath):
-        return jsonify({'error': f'Template not found: {name}'}), 404
-    try:
-        template = load_yaml_template(fpath)
-    except SystemExit:
-        return jsonify({'valid': False, 'template': name,
-                        'errors': [{'field': 'file', 'message': 'YAML parse error — check syntax'}],
-                        'warnings': []}), 200
-    result = validate_template(template, template_name=name)
-    return jsonify(result)
+        response = (jsonify({'error': 'template name required'}), 400)
+    else:
+        try:
+            rel = safe_template_path(name)
+        except ValueError as exc:
+            response = (jsonify({'error': str(exc)}), 400)
+        else:
+            fpath = os.path.join(TEMPLATES_DIR, rel)
+            if not os.path.isfile(fpath):
+                response = (jsonify({'error': f'Template not found: {name}'}), 404)
+            else:
+                try:
+                    template = load_yaml_template(fpath)
+                except SystemExit:
+                    response = (jsonify({'valid': False, 'template': name,
+                                         'errors': [{'field': 'file', 'message': 'YAML parse error — check syntax'}],
+                                         'warnings': []}), 200)
+                else:
+                    result = validate_template(template, template_name=name)
+                    response = (jsonify(result), 200)
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Routes — drift detection
+# ---------------------------------------------------------------------------
+
+@app.route('/api/drift', methods=['POST'])
+def drift_check():
+    '''
+    Compare a template's expected state against the live API state.
+
+    Request body: {"template": "<relative path>"}
+    Returns: DriftResult dict from uddi_utils.detect_drift()
+    '''
+    data = request.get_json(silent=True) or {}
+    template_name = data.get('template', '').strip()
+    if not template_name:
+        response = (jsonify({'error': 'template name required'}), 400)
+    else:
+        try:
+            rel = safe_template_path(template_name)
+        except ValueError as exc:
+            response = (jsonify({'error': str(exc)}), 400)
+        else:
+            tmpl_path = template_path(rel)
+            if not os.path.isfile(tmpl_path):
+                response = (jsonify({'error': f'Template not found: {template_name}'}), 404)
+            elif template_type_of(tmpl_path) != 'site':
+                response = (jsonify({'error': 'drift detection is only supported for site templates'}), 400)
+            else:
+                try:
+                    template = load_yaml_template(tmpl_path)
+                except SystemExit:
+                    response = (jsonify({'error': 'YAML parse error in template'}), 400)
+                else:
+                    site_name = str((template.get('site') or {}).get('name', '')).strip()
+
+                    cmd = [
+                        sys.executable,
+                        os.path.join(SCRIPT_DIR, 'query_site.py'),
+                        '-t', tmpl_path,
+                        '-c', CONFIG_FILE,
+                        '--json',
+                    ]
+                    proc = subprocess.run(cmd, capture_output=True, text=True)
+
+                    live: dict = {}
+                    if proc.returncode == 0:
+                        try:
+                            live = json.loads(proc.stdout)
+                        except json.JSONDecodeError:
+                            pass
+
+                    result = detect_drift(template, live, site_name=site_name)
+                    response = (jsonify(result), 200)
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -652,8 +811,10 @@ def get_config():
         '''env var wins over INI; INI wins over fallback.'''
         env_val = env_config(ini_key)
         if env_val:
-            return env_val
-        return cfg.get(ini_section, ini_key, fallback=fallback)
+            value = env_val
+        else:
+            value = cfg.get(ini_section, ini_key, fallback=fallback)
+        return value
 
     safe_config = {
         'url':         cfg.get('UDDI', 'url', fallback=''),
@@ -793,6 +954,7 @@ def main() -> None:
         debug=args.debug_flask,
         threaded=True,
     )
+    return
 
 
 if __name__ == '__main__':

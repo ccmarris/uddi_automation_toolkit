@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# DNS template (standard)
+#
+# Creates authoritative DNS zones (forward or reverse) and standalone DNS
+# records.  Run with provision_dns.py / decommission_dns.py / query_dns.py
+# (or the web UI with the DNS template type).
+#
+# Supported record types: A, AAAA, CNAME, MX, TXT, PTR
+#   rdata scalar shorthand: A/AAAA -> address, CNAME -> target,
+#                           TXT -> text, PTR -> target name
+#   MX uses a mapping: {preference: <int>, exchange: <fqdn>}
+# ---------------------------------------------------------------------------
+type: dns
+
+# Optional — overrides INI [DEFAULTS].dns_view
+# view: default
+
+zones:
+  - fqdn: corp.example.com
+    kind: forward            # forward | reverse (default forward)
+    primary_type: cloud      # default cloud
+    create: true             # create the zone if absent (default true)
+                             # set false to add records into an existing zone only
+    comment: "Example zone"
+    records:
+      - name: www            # name in zone; '@' or '' = apex
+        type: A
+        rdata: 10.0.1.10
+        ttl: 3600            # optional
+      - name: ftp
+        type: CNAME
+        rdata: www.corp.example.com
+      - name: mail
+        type: MX
+        rdata: {preference: 10, exchange: mail.corp.example.com}
+
+tags:
+  Owner: dns-team

@@ -118,7 +118,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
-from uddi_client import UDDIClient
+from uddi_client import UDDIClient, UDDIError
 from uddi_utils import env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, reverse_zone_fqdn
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,7 @@ class SiteDecommissioner:
         self.cfg = cfg
         self._space_id: str = ''
         self._view_id: str = ''
+        return
 
     # ------------------------------------------------------------------
     # Step 1: Resolve IP space
@@ -327,11 +328,10 @@ class SiteDecommissioner:
         '''
         block_id = block['id']
         logger.info('Listing subnets in block %s/%s', block['address'], block['cidr'])
-        data = self.client.get(
+        subnets = self.client.get_all(
             '/ipam/subnet',
             params={'_filter': f'parent=="{block_id}"'},
         )
-        subnets = data.get('results', [])
         logger.info('  Found %d subnet(s)', len(subnets))
         for s in subnets:
             logger.debug('  Subnet: %s/%s  name=%s  id=%s',
@@ -361,7 +361,7 @@ class SiteDecommissioner:
         removed: list[dict] = []
 
         logger.debug('Fetching all hosts for client-side subnet filtering')
-        all_hosts = self.client.get('/ipam/host').get('results', [])
+        all_hosts = self.client.get_all('/ipam/host')
 
         for subnet in subnets:
             subnet_id = subnet['id']
@@ -416,41 +416,42 @@ class SiteDecommissioner:
             False if it was not found or keep_zone is set.
         '''
         fqdn = self.cfg.dns_zone
+        deleted = False
 
         if self.cfg.keep_zone:
             logger.info('--keep-zone set — skipping deletion of zone: %s', fqdn)
-            return False
+        else:
+            logger.info(
+                '%sLooking up DNS zone: %s  view=%s',
+                '[DRY-RUN] ' if self.cfg.dry_run else '',
+                fqdn, self.cfg.dns_view,
+            )
 
-        logger.info(
-            '%sLooking up DNS zone: %s  view=%s',
-            '[DRY-RUN] ' if self.cfg.dry_run else '',
-            fqdn, self.cfg.dns_view,
-        )
+            data = self.client.get(
+                '/dns/auth_zone',
+                params={
+                    '_filter': (
+                        f'fqdn=="{fqdn}." and '
+                        f'view=="{self._view_id}"'
+                    ),
+                },
+            )
+            results = data.get('results', [])
+            if not results:
+                logger.info('  DNS zone not found — nothing to delete: %s', fqdn)
+            else:
+                zone = results[0]
+                zone_id = zone['id']
+                logger.info(
+                    '%sDeleting DNS zone: %s  id=%s',
+                    '[DRY-RUN] ' if self.cfg.dry_run else '',
+                    fqdn, zone_id,
+                )
+                if not self.cfg.dry_run:
+                    self.client.delete(f'/{zone_id}')
+                deleted = True
 
-        data = self.client.get(
-            '/dns/auth_zone',
-            params={
-                '_filter': (
-                    f'fqdn=="{fqdn}." and '
-                    f'view=="{self._view_id}"'
-                ),
-            },
-        )
-        results = data.get('results', [])
-        if not results:
-            logger.info('  DNS zone not found — nothing to delete: %s', fqdn)
-            return False
-
-        zone = results[0]
-        zone_id = zone['id']
-        logger.info(
-            '%sDeleting DNS zone: %s  id=%s',
-            '[DRY-RUN] ' if self.cfg.dry_run else '',
-            fqdn, zone_id,
-        )
-        if not self.cfg.dry_run:
-            self.client.delete(f'/{zone_id}')
-        return True
+        return deleted
 
     # ------------------------------------------------------------------
     # Step 6c: Delete reverse DNS zones for subnets
@@ -521,10 +522,11 @@ class SiteDecommissioner:
         Returns:
             List of dicts describing each deleted (or dry-run) DHCP range
         '''
-        all_ranges = self.client.get('/dhcp/range').get('results', [])
+        all_ranges = self.client.get_all('/ipam/range')
         ranges = [
             r for r in all_ranges
-            if _in_subnet(r.get('start', ''), subnet)
+            if r.get('space') == self._space_id
+            and _in_subnet(r.get('start', ''), subnet)
         ]
         deleted: list[dict] = []
         for r in ranges:
@@ -613,13 +615,15 @@ class SiteDecommissioner:
             block['address'], block['cidr'], self.cfg.final_status,
         )
         if self.cfg.dry_run:
-            return {'dry_run': True, 'tags': updated_tags}
+            block_result = {'dry_run': True, 'tags': updated_tags}
+        else:
+            result = self.client.patch(
+                f'/{block["id"]}',
+                body={'tags': updated_tags},
+            )
+            block_result = result.get('result', {})
 
-        result = self.client.patch(
-            f'/{block["id"]}',
-            body={'tags': updated_tags},
-        )
-        return result.get('result', {})
+        return block_result
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -694,6 +698,7 @@ def _in_subnet(address: str, subnet: dict) -> bool:
     Returns:
         True if the address is within the subnet, False otherwise
     '''
+    in_subnet = False
     try:
         def to_int(ip: str) -> int:
             parts = ip.split('.')
@@ -706,9 +711,11 @@ def _in_subnet(address: str, subnet: dict) -> bool:
         mask = (0xFFFFFFFF << (32 - cidr)) & 0xFFFFFFFF
         net_int  = to_int(subnet['address']) & mask
         addr_int = to_int(address) & mask
-        return addr_int == net_int
+        in_subnet = addr_int == net_int
     except (ValueError, KeyError):
-        return False
+        in_subnet = False
+
+    return in_subnet
 
 
 def confirm_decommission(cfg: DecommissionConfig) -> bool:
@@ -798,6 +805,7 @@ def print_result(result: DecommissionResult) -> None:
     else:
         print('Decommission complete.')
     print()
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -986,21 +994,23 @@ def main() -> None:
     # Resolve each value: CLI > YAML template > env var > INI > error
     def resolve(cli_val: Optional[str], yaml_val, ini_key: str, label: str) -> str:
         if cli_val:
-            return cli_val
-        if yaml_val:
-            return str(yaml_val)
-        env_val = env_config(ini_key)
-        if env_val:
-            return env_val
-        v = ini.get(ini_key, '')
-        if not v:
-            logger.error(
-                'Required value "%s" not supplied via CLI flag, YAML template, '
-                'or INI [DEFAULTS].%s',
-                label, ini_key,
-            )
-            sys.exit(1)
-        return v
+            resolved = cli_val
+        elif yaml_val:
+            resolved = str(yaml_val)
+        else:
+            env_val = env_config(ini_key)
+            if env_val:
+                resolved = env_val
+            else:
+                resolved = ini.get(ini_key, '')
+                if not resolved:
+                    logger.error(
+                        'Required value "%s" not supplied via CLI flag, YAML template, '
+                        'or INI [DEFAULTS].%s',
+                        label, ini_key,
+                    )
+                    sys.exit(1)
+        return resolved
 
     site       = resolve(args.site,       site_sec.get('name'),    'site',       '--site / site.name')
     ip_space   = resolve(args.ip_space,   net_sec.get('ip_space'), 'ip_space',   '--ip-space / network.ip_space')
@@ -1024,8 +1034,16 @@ def main() -> None:
         if args.template:
             print(f'  Template: {args.template}')
 
-    # Confirmation gate — skipped in dry-run mode, --force, and --json (non-interactive)
-    if not cfg.dry_run and not cfg.force and not args.json_output:
+    # Confirmation gate — skipped only in dry-run mode or with explicit --force.
+    # --json no longer bypasses confirmation on its own: a non-interactive run
+    # that makes destructive changes must opt in with --force.
+    if not cfg.dry_run and not cfg.force:
+        if args.json_output:
+            logger.error(
+                'Refusing to decommission non-interactively without --force. '
+                'Re-run with --force (and --json) or --dry-run.'
+            )
+            sys.exit(1)
         if not confirm_decommission(cfg):
             print('Aborted.')
             sys.exit(0)
@@ -1035,13 +1053,18 @@ def main() -> None:
 
     # Run decommissioner
     decommissioner = SiteDecommissioner(client, cfg)
-    result = decommissioner.decommission()
+    try:
+        result = decommissioner.decommission()
+    except UDDIError as exc:
+        logger.error('Decommission aborted on API error: %s', exc)
+        sys.exit(1)
 
     # Output result
     if args.json_output:
         print(json.dumps(dataclasses.asdict(result)))
     else:
         print_result(result)
+    return
 
 
 if __name__ == '__main__':

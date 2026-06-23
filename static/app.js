@@ -4,7 +4,50 @@
 // ── Global state ────────────────────────────────────────────────────────────
 
 let currentTemplate = null;   // filename of template currently loaded on server
+let currentTemplateType = 'site';  // 'site' | 'address-block' | 'dns'
 let currentTab      = 'builder';
+
+// Map of template name -> type, populated from /api/templates listing
+const _templateTypes = {};
+
+// Raw-YAML skeletons seeded when creating a non-site template
+const TYPE_SKELETONS = {
+  'address-block':
+`type: address-block
+name: my-block-pool
+# ip_space: my-ip-space   # optional, overrides INI default
+address_blocks:
+  - address: 10.0.0.0
+    cidr: 16
+    region: EMEA
+    environment: production
+    status: available
+    tags:
+      Owner: network-team
+    children:
+      - address: 10.0.0.0
+        cidr: 18
+tags:
+  CostCentre: CC-0000
+`,
+  'dns':
+`type: dns
+# view: default           # optional, overrides INI dns_view
+zones:
+  - fqdn: corp.example.com
+    kind: forward
+    create: true
+    records:
+      - name: www
+        type: A
+        rdata: 10.0.1.10
+      - name: mail
+        type: MX
+        rdata: {preference: 10, exchange: mail.corp.example.com}
+tags:
+  Owner: dns-team
+`,
+};
 
 // Builder form state
 let subnets  = [];
@@ -68,6 +111,57 @@ function switchTab(tab) {
   document.getElementById('tab-btn-' + tab).classList.add('active');
 }
 
+// ── Template type helpers ─────────────────────────────────────────────────────
+
+// Short badge label per type
+const _TYPE_LABEL = { 'site': 'SITE', 'address-block': 'BLOCK', 'dns': 'DNS', 'unknown': '?' };
+const _TYPE_CLASS = { 'site': 't-site', 'address-block': 't-block', 'dns': 't-dns', 'unknown': 't-unknown' };
+
+function _typeBadgeHtml(ttype) {
+  const t = ttype || 'unknown';
+  return `<span class="tmpl-type-badge ${_TYPE_CLASS[t] || 't-unknown'}">${_TYPE_LABEL[t] || '?'}</span>`;
+}
+
+// Client-side type detection mirroring uddi_utils.template_type()
+function detectType(yamlText) {
+  const text = yamlText || '';
+  const m = text.match(/^type:\s*['"]?([a-z-]+)['"]?\s*$/mi);
+  if (m && ['site', 'address-block', 'dns'].includes(m[1].toLowerCase())) return m[1].toLowerCase();
+  if (/^address_blocks:/m.test(text)) return 'address-block';
+  if (/^zones:/m.test(text)) return 'dns';
+  if (/^site:/m.test(text) || /^network:/m.test(text)) return 'site';
+  return 'unknown';
+}
+
+// Apply the current template type to the execute panel + builder tab
+function applyTypeToUI() {
+  const sel = document.getElementById('action-select');
+  const prev = sel.value;
+  const labels = {
+    provision: 'Provision', decommission: 'Decommission',
+    query: 'Query (read-only)', validate: 'Validate template', drift: 'Detect drift',
+  };
+  const actions = currentTemplateType === 'site'
+    ? ['provision', 'decommission', 'query', 'validate', 'drift']
+    : ['provision', 'decommission', 'query', 'validate'];
+  sel.innerHTML = actions.map(a => `<option value="${a}">${labels[a]}</option>`).join('');
+  sel.value = actions.includes(prev) ? prev : 'provision';
+
+  // Visual builder is site-only for now
+  const builderBtn = document.getElementById('tab-btn-builder');
+  if (currentTemplateType === 'site') {
+    builderBtn.classList.remove('tab-disabled');
+    builderBtn.onclick = () => switchTab('builder');
+    builderBtn.title = '';
+  } else {
+    builderBtn.classList.add('tab-disabled');
+    builderBtn.title = 'Visual builder coming soon for ' + currentTemplateType + ' templates';
+    builderBtn.onclick = () => toast('Visual builder is available for site templates only');
+    if (currentTab === 'builder') switchTab('yaml');
+  }
+  updateExecControls();
+}
+
 // ── Template list (sidebar) ──────────────────────────────────────────────────
 
 // Track which folders are collapsed: Set of folder paths (e.g. 'emea')
@@ -81,6 +175,9 @@ function refreshTemplates() {
     .then(r => r.json())
     .then(list => {
       _templateList = list || [];
+      (_templateList || []).forEach(e => {
+        if (e.type === 'file') _templateTypes[e.name] = e.tmpl_type || 'unknown';
+      });
       const q = document.getElementById('tmpl-search').value;
       if (q.trim()) {
         _renderFiltered(q.trim());
@@ -133,6 +230,7 @@ function _renderFiltered(query) {
     } else {
       el.textContent = label;
     }
+    el.insertAdjacentHTML('beforeend', _typeBadgeHtml(tmpl.tmpl_type));
     container.appendChild(el);
   });
 }
@@ -213,7 +311,7 @@ function _renderNode(container, node, pathPrefix) {
     const label = tmpl.name.split('/').pop();  // basename only
     const el = document.createElement('div');
     el.className = 'tmpl-item' + (tmpl.name === currentTemplate ? ' active' : '');
-    el.textContent = label;
+    el.innerHTML = htmlEsc(label) + _typeBadgeHtml(tmpl.tmpl_type);
     el.title = tmpl.name;
     el.dataset.tmplName = tmpl.name;
     el.onclick = () => loadTemplate(tmpl.name);
@@ -265,26 +363,47 @@ function loadTemplate(name) {
       document.getElementById('tmpl-name').value = data.name;
       document.getElementById('btn-delete').style.display = '';
       currentTemplate = data.name;
+      currentTemplateType = _templateTypes[data.name] || detectType(data.content);
       setBadge(data.name);
       _markActive(data.name);
+      applyTypeToUI();
       switchTab('yaml');
     })
     .catch(err => toast('Failed to load: ' + err.message));
 }
 
 function newTemplate() {
-  clearBuilder();
-  seedBuilder();
-  builderUpdate();
+  const choice = (prompt(
+    'New template type — enter: site, block, or dns', 'site',
+  ) || '').trim().toLowerCase();
+  if (!choice) return;
+  const typeMap = { site: 'site', block: 'address-block', dns: 'dns' };
+  const ttype = typeMap[choice];
+  if (!ttype) { toast('Unknown type — choose site, block, or dns'); return; }
+
   currentTemplate = null;
+  currentTemplateType = ttype;
   setBadge('(unsaved)');
   document.getElementById('tmpl-name').value = '';
   document.getElementById('btn-delete').style.display = 'none';
   _markActive(null);
-  const raw = document.getElementById('raw-editor');
-  raw.value = '';
-  raw.dataset.fromBuilder = 'true';
-  switchTab('builder');
+  applyTypeToUI();
+
+  if (ttype === 'site') {
+    clearBuilder();
+    seedBuilder();
+    builderUpdate();
+    const raw = document.getElementById('raw-editor');
+    raw.value = '';
+    raw.dataset.fromBuilder = 'true';
+    switchTab('builder');
+  } else {
+    // Non-site types: seed the raw editor with a skeleton (builder later)
+    const raw = document.getElementById('raw-editor');
+    raw.value = TYPE_SKELETONS[ttype] || '';
+    raw.dataset.fromBuilder = 'false';
+    switchTab('yaml');
+  }
 }
 
 function saveRawTemplate() {
@@ -539,12 +658,16 @@ function _appendCleanSummary(code) {
 
 function updateExecControls() {
   const action = document.getElementById('action-select').value;
+  const siteProvision = action === 'provision' && currentTemplateType === 'site';
   document.getElementById('row-force').style.display        = action === 'decommission' ? '' : 'none';
-  document.getElementById('row-create-zone').style.display  = action === 'provision' ? '' : 'none';
-  document.getElementById('row-reverse-zone').style.display = action === 'provision' ? '' : 'none';
-  document.getElementById('row-dry-run').style.display      = (action === 'query' || action === 'validate') ? 'none' : '';
-  if (action === 'query') { showQueryResults(); return; }
+  document.getElementById('row-create-zone').style.display   = siteProvision ? '' : 'none';
+  document.getElementById('row-reverse-zone').style.display  = siteProvision ? '' : 'none';
+  document.getElementById('row-if-not-exists').style.display = siteProvision ? '' : 'none';
+  const noStream = action === 'query' || action === 'validate' || action === 'drift';
+  document.getElementById('row-dry-run').style.display      = noStream ? 'none' : '';
+  if (action === 'query')    { showQueryResults();    return; }
   if (action === 'validate') { showValidateResults(); return; }
+  if (action === 'drift')    { showDriftResults();    return; }
   showTerminal();
 }
 
@@ -560,12 +683,14 @@ function execute() {
   const force       = document.getElementById('force-toggle').checked;
   const createZone  = document.getElementById('exec-create-zone').checked;
   const reverseZone = document.getElementById('exec-reverse-zone').checked;
+  const ifNotExists = document.getElementById('exec-if-not-exists').checked;
 
   document.getElementById('btn-execute').style.display = 'none';
   document.getElementById('btn-stop').style.display = '';
 
   if (action === 'query')    { _executeQuery(name);    return; }
   if (action === 'validate') { _executeValidate(name); return; }
+  if (action === 'drift')    { _executeDrift(name);    return; }
 
   // Provision / decommission — SSE streaming to terminal
   showTerminal();
@@ -579,6 +704,7 @@ function execute() {
     body.dry_run = dryRun;
     body.create_zone = createZone;
     body.create_reverse_zone = reverseZone;
+    body.if_not_exists = ifNotExists;
   } else {
     body.dry_run = dryRun;
     body.force = force;
@@ -715,6 +841,9 @@ function renderValidateResult(r) {
 }
 
 function renderQueryResult(r) {
+  if (r && r.type === 'address-block') { renderBlockQueryResult(r); return; }
+  if (r && r.type === 'dns')           { renderDnsQueryResult(r);   return; }
+
   const site = r.site || '(unknown)';
   let html = '';
 
@@ -790,12 +919,84 @@ function renderQueryResult(r) {
   document.getElementById('query-results').innerHTML = html;
 }
 
+function renderBlockQueryResult(r) {
+  let html = `<div class="qr-card">
+    <div class="qr-card-header"><span class="qr-title">Address Blocks: ${htmlEsc(r.name || '(by address)')}</span></div>
+    <div class="qr-card-body">
+      <dl><div class="qr-kv"><dt>IP space</dt><dd>${htmlEsc(r.ip_space || '—')}</dd></div></dl>`;
+
+  const renderNode = (node) => {
+    const cidr = `${node.address}/${node.cidr}`;
+    const meta = [];
+    if (node.status)      meta.push(node.status);
+    if (node.region)      meta.push(node.region);
+    if (node.environment) meta.push(node.environment);
+    let h = `<div class="qr-subnet">
+      <div class="qr-subnet-header">
+        <span class="qr-subnet-cidr">${htmlEsc(cidr)}</span>
+        ${meta.length ? `<span class="qr-subnet-name">${htmlEsc(meta.join(' · '))}</span>` : ''}
+      </div>`;
+    const children = node.children || [];
+    if (children.length) {
+      h += '<div class="qr-hosts">';
+      children.forEach(c => { h += renderNode(c); });
+      h += '</div>';
+    }
+    h += '</div>';
+    return h;
+  };
+
+  const blocks = r.blocks || [];
+  if (!blocks.length) {
+    html += '<div class="qr-no-hosts">No blocks found</div>';
+  } else {
+    blocks.forEach(b => { html += renderNode(b); });
+  }
+  html += '</div></div>';
+  document.getElementById('query-results').innerHTML = html;
+}
+
+function renderDnsQueryResult(r) {
+  let html = `<div class="qr-card">
+    <div class="qr-card-header"><span class="qr-title">DNS</span><span class="qr-badge">view: ${htmlEsc(r.view || '')}</span></div>
+  </div>`;
+
+  const zones = r.zones || [];
+  if (!zones.length) {
+    html += '<div class="qr-card"><div class="qr-card-body"><div class="qr-no-hosts">No zones in template</div></div></div>';
+  }
+  zones.forEach(z => {
+    html += `<div class="qr-card">
+      <div class="qr-card-header">
+        <span class="qr-title">${htmlEsc(z.fqdn)}</span>
+        <span class="qr-badge ${z.found ? 'ok' : 'err'}">${z.found ? 'Found' : 'Not found'}</span>
+      </div>
+      <div class="qr-card-body">`;
+    const records = z.records || [];
+    if (!records.length) {
+      html += `<div class="qr-no-hosts">${z.found ? 'No records' : '—'}</div>`;
+    } else {
+      html += '<div class="qr-hosts">';
+      records.forEach(rec => {
+        html += `<div class="qr-host-row">
+          <span class="qr-host-name">${htmlEsc(rec.type)} ${htmlEsc(rec.name)}</span>
+          <span class="qr-host-ip">${htmlEsc(rec.rdata || '')}</span>
+        </div>`;
+      });
+      html += '</div>';
+    }
+    html += '</div></div>';
+  });
+  document.getElementById('query-results').innerHTML = html;
+}
+
 function showTerminal() {
-  document.getElementById('output-tabs').style.display    = '';
-  document.getElementById('output-area').style.display    = '';
-  document.getElementById('query-results').style.display  = 'none';
+  document.getElementById('output-tabs').style.display      = '';
+  document.getElementById('output-area').style.display      = '';
+  document.getElementById('query-results').style.display    = 'none';
   document.getElementById('validate-results').style.display = 'none';
-  document.getElementById('btn-copy-output').style.display = '';
+  document.getElementById('drift-results').style.display    = 'none';
+  document.getElementById('btn-copy-output').style.display  = '';
   switchOutputTab(_outputTab);
 }
 
@@ -804,6 +1005,7 @@ function showQueryResults() {
   document.getElementById('output-area').style.display      = 'none';
   document.getElementById('query-results').style.display    = '';
   document.getElementById('validate-results').style.display = 'none';
+  document.getElementById('drift-results').style.display    = 'none';
   document.getElementById('btn-copy-output').style.display  = 'none';
 }
 
@@ -812,7 +1014,98 @@ function showValidateResults() {
   document.getElementById('output-area').style.display      = 'none';
   document.getElementById('query-results').style.display    = 'none';
   document.getElementById('validate-results').style.display = '';
+  document.getElementById('drift-results').style.display    = 'none';
   document.getElementById('btn-copy-output').style.display  = 'none';
+}
+
+function showDriftResults() {
+  document.getElementById('output-tabs').style.display      = 'none';
+  document.getElementById('output-area').style.display      = 'none';
+  document.getElementById('query-results').style.display    = 'none';
+  document.getElementById('validate-results').style.display = 'none';
+  document.getElementById('drift-results').style.display    = '';
+  document.getElementById('btn-copy-output').style.display  = 'none';
+}
+
+function _executeDrift(name) {
+  showDriftResults();
+  document.getElementById('drift-results').innerHTML =
+    '<div style="padding:20px;text-align:center;color:var(--ibx-muted);font-size:12px">Checking for drift…</div>';
+
+  fetch('/api/drift', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ template: name }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      execDone();
+      if (data.error) {
+        document.getElementById('drift-results').innerHTML =
+          '<div style="padding:16px;color:var(--ibx-danger);font-size:12px">Error: ' + htmlEsc(data.error) + '</div>';
+        return;
+      }
+      renderDriftResult(data);
+    })
+    .catch(err => {
+      execDone();
+      document.getElementById('drift-results').innerHTML =
+        '<div style="padding:16px;color:var(--ibx-danger);font-size:12px">Connection error: ' + htmlEsc(err.message) + '</div>';
+    });
+}
+
+function renderDriftResult(r) {
+  const found   = r.found;
+  const drifted = r.drifted;
+  const drifts  = r.drifts || [];
+  const summary = r.summary || {};
+  const site    = r.site || '(unknown)';
+  const block   = r.block_address || '';
+
+  let html = '<div class="dr-badge-row">';
+  if (!found) {
+    html += '<span class="dr-badge missing">⚠ Not Provisioned</span>';
+  } else if (!drifted) {
+    html += '<span class="dr-badge ok">✓ No Drift</span>';
+  } else {
+    const n = summary.total || drifts.length;
+    html += `<span class="dr-badge drifted">✗ Drift (${n})</span>`;
+  }
+  html += `<span class="dr-site-name">${htmlEsc(site)}</span>`;
+  if (block) html += `<span class="dr-block">${htmlEsc(block)}</span>`;
+  html += '</div>';
+
+  if (!drifts.length) {
+    html += '<div class="dr-empty">Site matches template — no differences detected.</div>';
+    document.getElementById('drift-results').innerHTML = html;
+    return;
+  }
+
+  // Group by category
+  const categories = {};
+  drifts.forEach(d => {
+    (categories[d.category] = categories[d.category] || []).push(d);
+  });
+
+  const catLabels = { site: 'Site', subnet: 'Subnets', dns: 'DNS', tags: 'Tags', hosts: 'Hosts' };
+  for (const [cat, items] of Object.entries(categories)) {
+    const label = catLabels[cat] || cat.charAt(0).toUpperCase() + cat.slice(1);
+    html += `<div class="dr-section-label">${htmlEsc(label)}</div>`;
+    items.forEach(d => {
+      const cls = d.severity === 'error' ? 'dr-error'
+                : d.severity === 'warning' ? 'dr-warning' : 'dr-info';
+      html += `<div class="dr-item ${cls}">
+        <span class="dr-field">${htmlEsc(d.field)}</span>
+        <span class="dr-msg">${htmlEsc(d.message)}</span>
+      </div>`;
+    });
+  }
+
+  const errs  = summary.errors   || 0;
+  const warns = summary.warnings || 0;
+  html += `<div class="dr-summary">${errs} error(s), ${warns} warning(s)</div>`;
+
+  document.getElementById('drift-results').innerHTML = html;
 }
 
 function renderLine(text) {
@@ -853,6 +1146,7 @@ function clearOutput() {
   document.getElementById('output-clean-area').innerHTML = '';
   document.getElementById('query-results').innerHTML = '';
   document.getElementById('validate-results').innerHTML = '';
+  document.getElementById('drift-results').innerHTML = '';
   showTerminal();
 }
 

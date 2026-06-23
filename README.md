@@ -107,9 +107,31 @@ CLI flags  >  YAML template  >  INI [DEFAULTS]  >  hardcoded fallbacks
 
 ---
 
-## YAML template schema
+## Template types
+
+The toolkit supports three kinds of template, distinguished by a top-level
+`type:` field (inferred from structure when omitted, for backward
+compatibility):
+
+| `type:`         | Manages                                  | Scripts                                                              |
+|-----------------|------------------------------------------|---------------------------------------------------------------------|
+| `site`          | Address block + subnets + DNS + hosts    | `provision_site.py` / `decommission_site.py` / `query_site.py`      |
+| `address-block` | IPAM address blocks (with nested children) | `provision_block.py` / `decommission_block.py` / `query_block.py` |
+| `dns`           | Auth zones + standalone DNS records      | `provision_dns.py` / `decommission_dns.py` / `query_dns.py`         |
+
+`address-block` templates create the pool of blocks that `site` provisioning
+later discovers by `Region` / `Environment` / `Status=available` tags.
+`dns` templates manage zones and records directly (A, AAAA, CNAME, MX, TXT,
+PTR). In the web UI the template type is shown as a badge and the available
+actions adjust to the type. Drift detection currently applies to `site`
+templates only.
+
+---
+
+## Site template schema (`type: site`)
 
 ```yaml
+type: site                     # optional — inferred from the `site:` section
 site:
   name:        london          # required
   region:      EMEA            # required
@@ -153,6 +175,76 @@ tags:                          # extra tags applied to block + all subnets
   Owner:      network-team
   CostCentre: CC-1234
 ```
+
+---
+
+## Address-block template schema (`type: address-block`)
+
+Creates IPAM address blocks (and optional nested children) to seed the
+discovery pool. Every block is tagged `Template=<name>` so it can be found
+again at decommission/query time. Child addresses must fall within their
+parent.
+
+```yaml
+type: address-block
+name: emea-prod-pool           # logical name; stamped as tag Template=<name>
+ip_space: my-ip-space          # optional — overrides INI default
+
+address_blocks:
+  - address: 10.20.0.0
+    cidr: 16
+    region: EMEA               # -> tag Region   (site discovery filters on this)
+    environment: production    # -> tag Environment
+    status: available          # -> tag Status   (default: available)
+    location: "EMEA"           # optional -> tag Location
+    comment: "EMEA supernet"
+    tags: {Owner: network-team}
+    children:                  # optional, recursive
+      - address: 10.20.0.0
+        cidr: 18
+
+tags:                          # template-wide tags merged onto every block
+  CostCentre: CC-EMEA-001
+```
+
+Run: `provision_block.py -t templates/blocks/emea-prod-pool.yaml --dry-run -v`
+
+---
+
+## DNS template schema (`type: dns`)
+
+Creates authoritative zones and standalone records via the `/dns/record`
+API. Supported record types: **A, AAAA, CNAME, MX, TXT, PTR**. Use scalar
+`rdata` shorthand for single-value types and a mapping for MX. `create: false`
+adds records into a pre-existing zone without creating (or deleting) the zone.
+
+```yaml
+type: dns
+view: default                  # optional — overrides INI dns_view
+
+zones:
+  - fqdn: corp.example.com
+    kind: forward              # forward | reverse (default forward)
+    primary_type: cloud        # default cloud
+    create: true               # create zone if absent (default true)
+    comment: "Corporate zone"
+    records:
+      - name: www              # name in zone; '@' or '' = apex
+        type: A
+        rdata: 10.20.1.10
+        ttl: 3600              # optional
+      - name: ftp
+        type: CNAME
+        rdata: www.corp.example.com
+      - name: mail
+        type: MX
+        rdata: {preference: 10, exchange: mail.corp.example.com}
+
+tags:                          # applied to created zones
+  Owner: dns-team
+```
+
+Run: `provision_dns.py -t templates/dns/corp.yaml --dry-run -v`
 
 ---
 

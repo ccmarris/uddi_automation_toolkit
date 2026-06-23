@@ -53,7 +53,7 @@
 
 ------------------------------------------------------------------------
 '''
-__version__ = '1.3.0'
+__version__ = '1.5.0'
 __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
@@ -171,10 +171,9 @@ def read_config(config_file: str) -> configparser.ConfigParser:
         files_read = cfg.read(config_file)
     except configparser.Error as exc:
         logger.warning('Could not parse config file %s: %s', config_file, exc)
-        return cfg
-
-    if not files_read:
-        logger.debug('Config file not found: %s', config_file)
+    else:
+        if not files_read:
+            logger.debug('Config file not found: %s', config_file)
     return cfg
 
 
@@ -227,21 +226,23 @@ def resolve_credentials(
         logger.debug('SSL verification overridden to: %s', verify_ssl)
 
     # API key: CLI flag > env var > INI
+    api_key = ''
     if api_key_flag:
         logger.debug('Using API key from --api-key flag')
-        return api_key_flag, base_url, verify_ssl
+        api_key = api_key_flag
+    else:
+        for env_var in ('INFOBLOX_PORTAL_KEY', 'UDDI_API_KEY'):
+            val = os.environ.get(env_var, '')
+            if val:
+                logger.debug('Using API key from %s environment variable', env_var)
+                api_key = val
+                break
+        else:
+            if ini.get('api_key'):
+                logger.debug('Using API key from INI file: %s', ini_file)
+                api_key = ini['api_key'].strip('\'"')
 
-    for env_var in ('INFOBLOX_PORTAL_KEY', 'UDDI_API_KEY'):
-        val = os.environ.get(env_var, '')
-        if val:
-            logger.debug('Using API key from %s environment variable', env_var)
-            return val, base_url, verify_ssl
-
-    if ini.get('api_key'):
-        logger.debug('Using API key from INI file: %s', ini_file)
-        return ini['api_key'].strip('\'"'), base_url, verify_ssl
-
-    return '', base_url, verify_ssl
+    return api_key, base_url, verify_ssl
 
 
 def setup_logging(debug: bool = False, verbose: bool = False) -> None:
@@ -264,6 +265,7 @@ def setup_logging(debug: bool = False, verbose: bool = False) -> None:
         format='%(asctime)s %(levelname)-8s %(name)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
+    return
 
 
 def reverse_zone_fqdn(address: str, cidr: int) -> str:
@@ -281,6 +283,13 @@ def reverse_zone_fqdn(address: str, cidr: int) -> str:
 
     Returns:
         in-addr.arpa zone FQDN string
+
+    Note:
+        Returns a single classful zone name based on /8, /16, or /24
+        boundaries.  Prefixes that are not on those boundaries (e.g. /23,
+        /22) map to the zone of their network address only and do not
+        fully cover the subnet; RFC 2317 classless delegation for prefixes
+        longer than /24 is not implemented.
     '''
     net = ipaddress.ip_network(f'{address}/{cidr}', strict=False)
     octets = str(net.network_address).split('.')
@@ -294,16 +303,191 @@ def reverse_zone_fqdn(address: str, cidr: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Template type
+# ---------------------------------------------------------------------------
+
+TEMPLATE_TYPES = ('site', 'address-block', 'dns')
+
+
+def template_type(template: dict) -> str:
+    '''
+    Classify a parsed template as 'site', 'address-block', or 'dns'.
+
+    Honours an explicit top-level ``type:`` field; otherwise infers from the
+    presence of the distinguishing top-level section so legacy templates
+    (written before the field existed) still resolve correctly.
+
+    Args:
+        template: Parsed YAML template dict
+
+    Returns:
+        One of 'site', 'address-block', 'dns', or 'unknown'
+    '''
+    explicit = str(template.get('type', '')).strip().lower()
+    if explicit in TEMPLATE_TYPES:
+        result = explicit
+    elif template.get('address_blocks') is not None:
+        result = 'address-block'
+    elif template.get('zones') is not None:
+        result = 'dns'
+    elif template.get('site') is not None or template.get('network') is not None:
+        result = 'site'
+    else:
+        result = 'unknown'
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Shared API lookups (used by the block / dns scripts)
+# ---------------------------------------------------------------------------
+
+def resolve_ip_space(client, name: str) -> str:
+    '''
+    Resolve an IP space name to its API resource ID.
+
+    Args:
+        client: UDDIClient instance
+        name:   IP space name
+
+    Returns:
+        IP space resource ID string
+
+    Raises:
+        SystemExit if the space is not found
+    '''
+    logger.info('Resolving IP space: %s', name)
+    data = client.get('/ipam/ip_space', params={'_filter': f'name=="{name}"'})
+    results = data.get('results', [])
+    if not results:
+        logger.error('IP space not found: %s', name)
+        sys.exit(1)
+    space_id = results[0]['id']
+    logger.debug('IP space ID: %s', space_id)
+    return space_id
+
+
+def resolve_dns_view(client, name: str) -> str:
+    '''
+    Resolve a DNS view name to its API resource ID.
+
+    Args:
+        client: UDDIClient instance
+        name:   DNS view name
+
+    Returns:
+        DNS view resource ID string
+
+    Raises:
+        SystemExit if the view is not found
+    '''
+    logger.info('Resolving DNS view: %s', name)
+    data = client.get('/dns/view', params={'_filter': f'name=="{name}"'})
+    results = data.get('results', [])
+    if not results:
+        logger.error('DNS view not found: %s', name)
+        sys.exit(1)
+    view_id = results[0]['id']
+    logger.debug('DNS view ID: %s', view_id)
+    return view_id
+
+
+def find_zone(client, fqdn: str, view_id: str) -> dict:
+    '''
+    Look up an authoritative DNS zone by FQDN within a view.
+
+    Args:
+        client:  UDDIClient instance
+        fqdn:    Zone FQDN without the trailing dot (e.g. 'corp.example.com')
+        view_id: DNS view resource ID
+
+    Returns:
+        Zone resource dict, or {} if not found
+    '''
+    data = client.get(
+        '/dns/auth_zone',
+        params={'_filter': f'fqdn=="{fqdn}." and view=="{view_id}"'},
+    )
+    results = data.get('results', [])
+    return results[0] if results else {}
+
+
+# ---------------------------------------------------------------------------
+# DNS record helpers
+# ---------------------------------------------------------------------------
+
+SUPPORTED_RECORD_TYPES = ('A', 'AAAA', 'CNAME', 'MX', 'TXT', 'PTR')
+
+
+def build_record_body(zone_id: str, record: dict) -> dict:
+    '''
+    Build a Universal DDI ``POST /dns/record`` request body from a template
+    record definition.
+
+    Accepts scalar shorthand rdata for single-value types (A, AAAA, CNAME,
+    TXT, PTR) and a mapping for MX (``preference``/``pref`` and ``exchange``).
+    An ``@`` or empty ``name`` denotes the zone apex.
+
+    Args:
+        zone_id: Auth zone resource ID the record belongs to
+        record:  Template record dict (name, type, rdata, optional ttl)
+
+    Returns:
+        Request body dict suitable for client.post('/dns/record', body)
+
+    Raises:
+        ValueError if the record type is unsupported or rdata is malformed
+    '''
+    rtype = str(record.get('type', '')).strip().upper()
+    if rtype not in SUPPORTED_RECORD_TYPES:
+        raise ValueError(
+            f'Unsupported record type {rtype!r}; supported: '
+            f'{", ".join(SUPPORTED_RECORD_TYPES)}'
+        )
+
+    raw = record.get('rdata')
+    if rtype in ('A', 'AAAA'):
+        rdata = {'address': str(raw)}
+    elif rtype == 'CNAME':
+        rdata = {'cname': str(raw)}
+    elif rtype == 'TXT':
+        rdata = {'text': str(raw)}
+    elif rtype == 'PTR':
+        rdata = {'dname': str(raw)}
+    else:  # MX
+        if not isinstance(raw, dict):
+            raise ValueError('MX rdata must be a mapping with preference and exchange')
+        pref = raw.get('preference', raw.get('pref'))
+        exchange = raw.get('exchange', '')
+        if pref is None or not exchange:
+            raise ValueError('MX rdata requires both preference and exchange')
+        rdata = {'preference': int(pref), 'exchange': str(exchange)}
+
+    name = str(record.get('name', '')).strip()
+    if name == '@':
+        name = ''
+
+    body = {
+        'name_in_zone': name,
+        'zone':         zone_id,
+        'type':         rtype,
+        'rdata':        rdata,
+    }
+    if record.get('ttl') is not None:
+        body['ttl'] = int(record['ttl'])
+    return body
+
+
+# ---------------------------------------------------------------------------
 # Template validation
 # ---------------------------------------------------------------------------
 
 def validate_template(template: dict, template_name: str = '') -> dict:
     '''
-    Validate a parsed YAML site template against the expected schema.
+    Validate a parsed YAML template against the schema for its type.
 
-    Checks required fields, value types, CIDR ranges, and cross-field
-    references (e.g. host subnet references a defined subnet name).
-    Does not contact the API — purely structural validation.
+    Dispatches on template_type() to the appropriate structural validator
+    (site, address-block, or dns).  Does not contact the API — purely
+    structural validation.
 
     Args:
         template:      Parsed YAML dict (from load_yaml_template or {})
@@ -313,17 +497,46 @@ def validate_template(template: dict, template_name: str = '') -> dict:
         Dict with keys:
             valid     -- True if no errors found
             template  -- template_name echoed back
+            type      -- resolved template type
             errors    -- list of {field, message} dicts (schema violations)
             warnings  -- list of {field, message} dicts (missing optionals)
     '''
     errors: list[dict] = []
     warnings: list[dict] = []
+    ttype = template_type(template)
 
+    if ttype == 'address-block':
+        _validate_block(template, errors, warnings)
+    elif ttype == 'dns':
+        _validate_dns(template, errors, warnings)
+    else:
+        _validate_site(template, errors, warnings)
+
+    return {
+        'valid': len(errors) == 0,
+        'template': template_name,
+        'type': ttype,
+        'errors': errors,
+        'warnings': warnings,
+    }
+
+
+def _validate_site(template: dict, errors: list, warnings: list) -> None:
+    '''
+    Validate a site template's structure, appending to errors/warnings.
+
+    Args:
+        template: Parsed YAML dict
+        errors:   List to append schema-violation dicts to
+        warnings: List to append missing-optional dicts to
+    '''
     def _err(field: str, msg: str) -> None:
         errors.append({'field': field, 'message': msg})
+        return
 
     def _warn(field: str, msg: str) -> None:
         warnings.append({'field': field, 'message': msg})
+        return
 
     # ── site ──
     site = template.get('site') or {}
@@ -444,9 +657,276 @@ def validate_template(template: dict, template_name: str = '') -> dict:
             if v is not None and not isinstance(v, (str, int, float, bool)):
                 _warn(f'tags.{k}', f'Value {v!r} is not a scalar')
 
-    return {
-        'valid': len(errors) == 0,
-        'template': template_name,
-        'errors': errors,
-        'warnings': warnings,
-    }
+    return
+
+
+def _validate_block(template: dict, errors: list, warnings: list) -> None:
+    '''
+    Validate an address-block template's structure.
+
+    Checks the address_blocks list, each block's address/cidr, and recurses
+    into nested children verifying each child network falls inside its parent.
+
+    Args:
+        template: Parsed YAML dict
+        errors:   List to append schema-violation dicts to
+        warnings: List to append missing-optional dicts to
+    '''
+    def _err(field: str, msg: str) -> None:
+        errors.append({'field': field, 'message': msg})
+        return
+
+    def _warn(field: str, msg: str) -> None:
+        warnings.append({'field': field, 'message': msg})
+        return
+
+    if not str(template.get('name', '')).strip():
+        _warn('name', 'No template name — used to tag and later find created blocks')
+
+    blocks = template.get('address_blocks')
+    if not blocks:
+        _err('address_blocks', 'Required and must be a non-empty list')
+        blocks = []
+    elif not isinstance(blocks, list):
+        _err('address_blocks', 'Must be a list')
+        blocks = []
+
+    def _check_block(block: dict, pfx: str, parent_net) -> None:
+        if not isinstance(block, dict):
+            _err(pfx, 'Each block must be a mapping')
+        else:
+            addr = str(block.get('address', '')).strip()
+            cidr = block.get('cidr')
+            net = None
+            if not addr:
+                _err(f'{pfx}.address', 'Required')
+            if cidr is None:
+                _err(f'{pfx}.cidr', 'Required')
+            else:
+                try:
+                    c = int(cidr)
+                    if not 8 <= c <= 30:
+                        _err(f'{pfx}.cidr', f'CIDR prefix {c} is outside valid range 8–30')
+                    elif addr:
+                        net = ipaddress.ip_network(f'{addr}/{c}', strict=False)
+                except (TypeError, ValueError) as exc:
+                    _err(f'{pfx}.cidr', f'Invalid address/cidr: {exc}')
+            if net is not None and parent_net is not None:
+                if not (net.subnet_of(parent_net) and net != parent_net):
+                    _err(f'{pfx}', f'{net} is not contained within parent {parent_net}')
+            if parent_net is None:
+                if not block.get('region'):
+                    _warn(f'{pfx}.region', 'No region — site discovery filters on Region')
+                if not block.get('environment'):
+                    _warn(f'{pfx}.environment', 'No environment — site discovery filters on Environment')
+            children = block.get('children') or []
+            if children and not isinstance(children, list):
+                _err(f'{pfx}.children', 'Must be a list')
+                children = []
+            for j, child in enumerate(children):
+                _check_block(child, f'{pfx}.children[{j}]', net)
+        return
+
+    for i, block in enumerate(blocks):
+        _check_block(block, f'address_blocks[{i}]', None)
+
+    return
+
+
+def _validate_dns(template: dict, errors: list, warnings: list) -> None:
+    '''
+    Validate a dns template's structure.
+
+    Checks the zones list, each zone's fqdn, and each record's type and rdata
+    shape (via the same normalisation used at provision time).
+
+    Args:
+        template: Parsed YAML dict
+        errors:   List to append schema-violation dicts to
+        warnings: List to append missing-optional dicts to
+    '''
+    def _err(field: str, msg: str) -> None:
+        errors.append({'field': field, 'message': msg})
+        return
+
+    def _warn(field: str, msg: str) -> None:
+        warnings.append({'field': field, 'message': msg})
+        return
+
+    zones = template.get('zones')
+    if not zones:
+        _err('zones', 'Required and must be a non-empty list')
+        zones = []
+    elif not isinstance(zones, list):
+        _err('zones', 'Must be a list')
+        zones = []
+
+    for i, zone in enumerate(zones):
+        pfx = f'zones[{i}]'
+        if not isinstance(zone, dict):
+            _err(pfx, 'Each zone must be a mapping')
+            continue
+        if not str(zone.get('fqdn', '')).strip():
+            _err(f'{pfx}.fqdn', 'Required and must be non-empty')
+        kind = str(zone.get('kind', 'forward')).strip().lower()
+        if kind not in ('forward', 'reverse'):
+            _err(f'{pfx}.kind', f"Must be 'forward' or 'reverse', got {kind!r}")
+        records = zone.get('records') or []
+        if records and not isinstance(records, list):
+            _err(f'{pfx}.records', 'Must be a list')
+            records = []
+        for j, rec in enumerate(records):
+            rpfx = f'{pfx}.records[{j}]'
+            if not isinstance(rec, dict):
+                _err(rpfx, 'Each record must be a mapping')
+                continue
+            try:
+                build_record_body('validate', rec)
+            except (ValueError, TypeError) as exc:
+                _err(rpfx, str(exc))
+
+    return
+
+
+# ---------------------------------------------------------------------------
+# Drift detection
+# ---------------------------------------------------------------------------
+
+def detect_drift(template: dict, live: dict, site_name: str = '') -> dict:
+    '''
+    Compare a template's expected state against a live query result.
+
+    Does not contact the API — caller is responsible for providing the
+    live dict (typically from query_site.py --json output).
+
+    Args:
+        template:  Parsed YAML template dict
+        live:      QueryResult as a plain dict (from query_site.py --json);
+                   pass {} or a dict with no block_address when site is absent
+        site_name: Site identifier echoed back into the result
+
+    Returns:
+        Dict with:
+            site          -- site name
+            found         -- True if a live block was found
+            drifted       -- True if any differences were detected
+            block_address -- live block CIDR, or '' if not found
+            drifts        -- list of {category, severity, field, message}
+            summary       -- {total, errors, warnings}
+    '''
+    drifts: list[dict] = []
+
+    def _drift(category: str, severity: str, field: str, message: str) -> None:
+        drifts.append({
+            'category': category,
+            'severity': severity,
+            'field': field,
+            'message': message,
+        })
+        return
+
+    # Resolve site name from live data when not supplied
+    resolved_site = site_name or live.get('site', '')
+
+    # ── 1. Site existence ──────────────────────────────────────────────────
+    if not live.get('block_address'):
+        _drift('site', 'error', 'block',
+               'Site is not provisioned — no allocated block found')
+        result = {
+            'site': resolved_site,
+            'found': False,
+            'drifted': True,
+            'block_address': '',
+            'drifts': drifts,
+            'summary': {'total': 1, 'errors': 1, 'warnings': 0},
+        }
+    else:
+        net = template.get('network') or {}
+        dns = template.get('dns') or {}
+        tags_tmpl = template.get('tags') or {}
+
+        live_subnets = live.get('subnets') or []
+        live_tags = live.get('block_tags') or {}
+        block_addr = live.get('block_address', '')
+
+        # ── 2. Subnets ─────────────────────────────────────────────────────────
+        expected_subnet_names = {
+            str(s.get('name', '')).strip()
+            for s in (net.get('subnets') or [])
+            if str(s.get('name', '')).strip()
+        }
+        live_subnet_names = {
+            str(s.get('name', '')).strip()
+            for s in live_subnets
+            if str(s.get('name', '')).strip()
+        }
+
+        for name in sorted(expected_subnet_names - live_subnet_names):
+            _drift('subnet', 'error', f'network.subnets[{name}]',
+                   f'Expected subnet {name!r} not found in API')
+        for name in sorted(live_subnet_names - expected_subnet_names):
+            _drift('subnet', 'warning', f'subnet:{name}',
+                   f'Subnet {name!r} exists in API but is not in the template')
+
+        # ── 3. DNS zone (forward only — reverse zones and DHCP ranges are not
+        #        checked because query_site.py does not query those resources) ──
+        wants_zone = bool(dns.get('create_zone'))
+        zone_found = bool(live.get('dns_zone_found'))
+
+        if wants_zone and not zone_found:
+            _drift('dns', 'error', 'dns.create_zone',
+                   'Template specifies create_zone: true but no DNS zone was found')
+        elif not wants_zone and zone_found:
+            fqdn = live.get('dns_zone_fqdn', '')
+            _drift('dns', 'warning', 'dns.create_zone',
+                   f'DNS zone {fqdn!r} exists in API but template does not specify create_zone: true')
+
+        # ── 4. Template tags ───────────────────────────────────────────────────
+        for key, expected_val in sorted(tags_tmpl.items()):
+            live_val = live_tags.get(key)
+            if live_val is None:
+                _drift('tags', 'warning', f'tags.{key}',
+                       f'Tag {key!r} missing from block (expected {str(expected_val)!r})')
+            elif str(live_val) != str(expected_val):
+                _drift('tags', 'warning', f'tags.{key}',
+                       f'Tag {key!r}: expected {str(expected_val)!r}, live value is {str(live_val)!r}')
+
+        # ── 5. Hosts ───────────────────────────────────────────────────────────
+        expected_hosts = {
+            str(h.get('hostname', '')).strip()
+            for h in (template.get('hosts') or [])
+            if str(h.get('hostname', '')).strip()
+        }
+        live_hosts: set[str] = set()
+        for subnet in live_subnets:
+            for h in subnet.get('hosts') or []:
+                raw = h.get('name') or h.get('id') or ''
+                # strip domain suffix to get bare hostname for comparison
+                base = str(raw).split('.')[0].strip()
+                if base:
+                    live_hosts.add(base)
+
+        for hostname in sorted(expected_hosts - live_hosts):
+            _drift('hosts', 'warning', f'hosts[{hostname}]',
+                   f'Expected host {hostname!r} not found in any subnet')
+        for hostname in sorted(live_hosts - expected_hosts):
+            _drift('hosts', 'info', f'host:{hostname}',
+                   f'Host {hostname!r} exists in API but is not in the template')
+
+        errors   = sum(1 for d in drifts if d['severity'] == 'error')
+        warnings = sum(1 for d in drifts if d['severity'] in ('warning', 'info'))
+
+        result = {
+            'site': resolved_site,
+            'found': True,
+            'drifted': len(drifts) > 0,
+            'block_address': block_addr,
+            'drifts': drifts,
+            'summary': {
+                'total': len(drifts),
+                'errors': errors,
+                'warnings': warnings,
+            },
+        }
+
+    return result

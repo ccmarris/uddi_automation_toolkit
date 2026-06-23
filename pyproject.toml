@@ -1,7 +1,7 @@
 [project]
 name = "uddi-automation-toolkit"
-version = "1.0.0"
-description = "Tag-driven site provisioning, decommissioning, querying, and template authoring for Infoblox Universal DDI"
+version = "1.1.0"
+description = "Tag-driven site, address-block, and DNS provisioning, decommissioning, querying, and template authoring for Infoblox Universal DDI"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Chris Marrison", email = "chris@infoblox.com" }]
@@ -16,6 +16,12 @@ dependencies = [
 provision-site      = "provision_site:main"
 decommission-site   = "decommission_site:main"
 query-site          = "query_site:main"
+provision-block     = "provision_block:main"
+decommission-block  = "decommission_block:main"
+query-block         = "query_block:main"
+provision-dns       = "provision_dns:main"
+decommission-dns    = "decommission_dns:main"
+query-dns           = "query_dns:main"
 batch-provision     = "batch_provision:main"
 uddi-web            = "web_server:main"
 

@@ -56,12 +56,29 @@ __author_email__ = 'chris@infoblox.com'
 
 import json
 import logging
-import sys
 from typing import Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+class UDDIError(Exception):
+    '''
+    Raised on a non-2xx response from the Universal DDI API.
+
+    Carries the HTTP status code, request method, URL, and response body so
+    callers can log a clear message or decide how to recover (e.g. rollback)
+    instead of the client unilaterally terminating the process.
+    '''
+
+    def __init__(self, method: str, url: str, status_code: int, body: str) -> None:
+        self.method = method
+        self.url = url
+        self.status_code = status_code
+        self.body = body
+        super().__init__(f'API error {method} {url}: {status_code} {body}')
+        return
 
 
 class UDDIClient:
@@ -92,6 +109,7 @@ class UDDIClient:
             'Content-Type': 'application/json',
         })
         self.session.verify = verify_ssl
+        return
 
     def get(self, path: str, params: Optional[dict] = None) -> dict:
         '''
@@ -112,6 +130,43 @@ class UDDIClient:
         response = self.session.get(url, params=params)
         self._check(response)
         return response.json()
+
+    def get_all(
+        self,
+        path: str,
+        params: Optional[dict] = None,
+        page_size: int = 1000,
+    ) -> list:
+        '''
+        GET every result for a collection, following pagination.
+
+        The Universal DDI API page-limits list responses, so a single GET
+        only returns the first page.  This walks the collection using
+        _limit / _offset and returns the concatenated 'results' list.
+
+        Args:
+            path:      API path relative to BASE_PATH (e.g. '/ipam/host')
+            params:    Optional query parameters (e.g. a _filter expression)
+            page_size: Results to request per page (API maximum is 1000)
+
+        Returns:
+            Combined list of all result objects across pages
+
+        Raises:
+            UDDIError on HTTP error (via get())
+        '''
+        query = dict(params or {})
+        offset = 0
+        results: list = []
+        while True:
+            query['_limit'] = page_size
+            query['_offset'] = offset
+            page = self.get(path, params=query).get('results', [])
+            results.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+        return results
 
     def post(self, path: str, body: dict) -> dict:
         '''
@@ -167,6 +222,7 @@ class UDDIClient:
         logger.debug('DELETE %s', url)
         response = self.session.delete(url)
         self._check(response)
+        return
 
     def _check(self, response: requests.Response) -> None:
         '''
@@ -176,7 +232,7 @@ class UDDIClient:
             response: requests.Response to inspect
 
         Raises:
-            SystemExit with status code and body on error
+            UDDIError with status code and body on error
         '''
         if not response.ok:
             logger.error(
@@ -185,4 +241,10 @@ class UDDIClient:
                 response.url,
                 response.text,
             )
-            sys.exit(1)
+            raise UDDIError(
+                method=response.request.method,
+                url=response.url,
+                status_code=response.status_code,
+                body=response.text,
+            )
+        return
