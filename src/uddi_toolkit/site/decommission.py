@@ -15,12 +15,15 @@
 
       1. Discover the allocated address block for the site (tags:
          Site=<name>, Status=allocated)
-      2. Enumerate all IPAM hosts allocated within the site subnets
-         and delete them (removes IPAM record + DNS A/PTR)
-      3. Delete the forward DNS authoritative zone for the site
+      2. Delete the forward DNS authoritative zone for the site
          (site-<name>.<dns_parent>)
-      4. Delete all subnets carved from the block
-      5. Reset the address block tags — Status → <final_status>,
+      3. Delete DHCP ranges and reverse zones for the site subnets
+      4. Delete all subnets carved from the block — this releases the
+         host addresses (a DHCP-bound address cannot be deleted while the
+         host still holds it)
+      5. Delete the now-addressless IPAM host records (removes the IPAM
+         record + auto-generated DNS A/PTR), matched by the site DNS zone
+      6. Reset the address block tags — Status → <final_status>,
          Site → unassigned, clears Provisioned/Location
 
     All destructive steps support --dry-run so you can preview the
@@ -195,11 +198,13 @@ class SiteDecommissioner:
     1. resolve_ip_space()     - look up IP space ID from name
     2. find_allocated_block() - tag-based discovery of the site's block
     3. resolve_dns_view()     - look up DNS view ID from name
-    4. find_subnets()         - list all subnets inside the block
-    5. delete_hosts()         - remove all IPAM hosts in site subnets
-    6. delete_dns_zone()      - delete forward authoritative zone
-    7. delete_subnets()       - remove all carved subnets
-    8. reset_block_status()   - set block Status=<final_status>, Site=unassigned
+    4. find_subnets()         - list the site's subnets (by Site tag)
+    5. delete_dns_zone()      - delete forward authoritative zone
+    6. delete_dhcp_ranges()   - delete DHCP ranges within each subnet
+    7. delete_reverse_zones() - delete reverse zones for the subnets
+    8. delete_subnets()       - remove all carved subnets (releases host IPs)
+    9. delete_hosts()         - remove the now-addressless IPAM host records
+    10. reset_block_status()  - set block Status=<final_status>, Site=unassigned
     '''
 
     def __init__(self, client: UDDIClient, cfg: DecommissionConfig) -> None:
@@ -352,60 +357,43 @@ class SiteDecommissioner:
     # Step 5: Delete IPAM hosts in site subnets
     # ------------------------------------------------------------------
 
-    def delete_hosts(self, subnets: list[dict]) -> list[dict]:
+    def delete_hosts(self) -> list[dict]:
         '''
-        Find and delete all IPAM host records whose address falls within
-        any of the given subnets.
+        Find and delete all IPAM host records belonging to this site.
 
-        Hosts are looked up by their address assignments using the
-        subnet's resource ID, then deleted individually.  Deleting an
-        IPAM host automatically removes its associated DNS A and PTR
-        records when auto_generate_records was enabled.
-
-        Args:
-            subnets: List of subnet resource dicts from find_subnets()
+        Hosts are matched by their FQDN within the site DNS zone
+        (site-<name>.<dns_parent>), not by subnet membership, so this can
+        run AFTER the subnets are deleted.  That ordering matters: a
+        DHCP-bound host address reports "in use" and refuses host deletion
+        while the host still holds it, but deleting the subnet first
+        releases the address, leaving an addressless host record that
+        deletes cleanly.  Deleting an IPAM host removes its auto-generated
+        DNS A/PTR records.
 
         Returns:
             List of dicts describing each deleted (or dry-run) host
         '''
         removed: list[dict] = []
+        suffix = f'.{self.cfg.dns_zone}'
 
-        logger.debug('Fetching all hosts for client-side subnet filtering')
+        logger.debug('Fetching all hosts to match site zone %s', self.cfg.dns_zone)
         all_hosts = self.client.get_all('/ipam/host')
+        site_hosts = [h for h in all_hosts if str(h.get('name', '')).endswith(suffix)]
 
-        for subnet in subnets:
-            subnet_id = subnet['id']
-            subnet_cidr = f'{subnet["address"]}/{subnet["cidr"]}'
-            logger.info('  Searching for hosts in subnet %s', subnet_cidr)
-
-            # Filter to hosts that have at least one address in this subnet
-            site_hosts = [
-                h for h in all_hosts
-                if any(
-                    addr.get('space') == self._space_id and
-                    _in_subnet(addr.get('address', ''), subnet)
-                    for addr in h.get('addresses', [])
-                )
-            ]
-
-            for host in site_hosts:
-                fqdn = host.get('name', host.get('id', 'unknown'))
-                host_id = host['id']
-                logger.info(
-                    '%sDeleting host: %s  id=%s',
-                    '[DRY-RUN] ' if self.cfg.dry_run else '',
-                    fqdn, host_id,
-                )
-                if not self.cfg.dry_run:
-                    self.client.delete(f'/{host_id}')
-                removed.append({
-                    'fqdn':   fqdn,
-                    'id':     host_id,
-                    'subnet': subnet_cidr,
-                })
+        for host in site_hosts:
+            fqdn = host.get('name', host.get('id', 'unknown'))
+            host_id = host['id']
+            logger.info(
+                '%sDeleting host: %s  id=%s',
+                '[DRY-RUN] ' if self.cfg.dry_run else '',
+                fqdn, host_id,
+            )
+            if not self.cfg.dry_run:
+                self.client.delete(f'/{host_id}')
+            removed.append({'fqdn': fqdn, 'id': host_id})
 
         if not removed:
-            logger.info('  No IPAM hosts found in site subnets')
+            logger.info('  No IPAM hosts found for site zone %s', self.cfg.dns_zone)
 
         return removed
 
@@ -666,24 +654,27 @@ class SiteDecommissioner:
         # Step 4: Enumerate subnets
         subnets = self.find_subnets(block)
 
-        # Step 5: Delete IPAM hosts
-        result.hosts_deleted = self.delete_hosts(subnets)
-
-        # Step 6: Delete DNS zone
+        # Step 5: Delete DNS zone
         result.dns_zone_fqdn = self.cfg.dns_zone
         result.dns_zone_deleted = self.delete_dns_zone()
 
-        # Step 6b: Delete DHCP ranges in each subnet
+        # Step 6: Delete DHCP ranges in each subnet
         for subnet in subnets:
             result.dhcp_ranges_deleted.extend(self.delete_dhcp_ranges(subnet))
 
-        # Step 6c: Delete reverse DNS zones for subnets (silently skips absent zones)
+        # Step 7: Delete reverse DNS zones for subnets (silently skips absent zones)
         result.reverse_zones_deleted = self.delete_reverse_zones(subnets)
 
-        # Step 7: Delete subnets
+        # Step 8: Delete subnets — this releases the host addresses so the
+        # host records (whose DHCP-bound addresses are otherwise "in use")
+        # can then be removed.
         result.subnets_deleted = self.delete_subnets(subnets)
 
-        # Step 8: Reset block status
+        # Step 9: Delete the now-addressless IPAM host records (and their
+        # auto-generated DNS A/PTR), matched by the site DNS zone.
+        result.hosts_deleted = self.delete_hosts()
+
+        # Step 10: Reset block status
         self.reset_block_status(block)
         result.block_updated = True
 
