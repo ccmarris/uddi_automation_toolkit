@@ -523,7 +523,7 @@
 <header>
   <div class="logo-diamond"></div>
   <h1>Universal DDI — <span>Site Template Builder</span></h1>
-  <p>provision_site.py / decommission_site.py</p>
+  <p>uddi provision site / uddi decommission site</p>
 </header>
 
 <div class="layout">
@@ -1029,9 +1029,9 @@
     const name = v('site-name').toLowerCase();
     const tmpl = name ? `templates/site-${name}.yaml` : 'templates/site-<name>.yaml';
     document.getElementById('cli-provision').textContent =
-      `python3 provision_site.py -t ${tmpl} --dry-run -v`;
+      `uddi provision site -t ${tmpl} --dry-run -v`;
     document.getElementById('cli-decommission').textContent =
-      `python3 decommission_site.py -t ${tmpl} --dry-run -v`;
+      `uddi decommission site -t ${tmpl} --dry-run -v`;
   }
 
   // ====================================================================

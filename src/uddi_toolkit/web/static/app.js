@@ -1542,9 +1542,9 @@ function builderUpdate() {
   const siteName = v('site-name').trim() || 'my-site';
   const tmplFile = currentTemplate || '<template.yaml>';
   document.getElementById('cli-provision').textContent =
-    'provision_site.py -t ' + tmplFile + ' -v';
+    'uddi provision site -t ' + tmplFile + ' -v';
   document.getElementById('cli-decommission').textContent =
-    'decommission_site.py -t ' + tmplFile + ' --force -v';
+    'uddi decommission site -t ' + tmplFile + ' --force -v';
 }
 
 // ── Builder download / copy ───────────────────────────────────────────────────

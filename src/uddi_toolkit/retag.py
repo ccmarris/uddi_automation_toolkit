@@ -73,8 +73,9 @@ import json
 import logging
 import sys
 
-from uddi_client import UDDIClient, UDDIError
-from uddi_utils import (
+from uddi_toolkit.client import UDDIClient, UDDIError
+from uddi_toolkit.core import (
+    add_common_args,
     env_config,
     read_config,
     resolve_credentials,
@@ -174,17 +175,13 @@ def print_result(changed: list, status: str, dry_run: bool) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
-def parseargs() -> argparse.Namespace:
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     '''
-    Parse command-line arguments.
+    Add the retag-block command's arguments to the given parser.
 
-    Returns:
-        Parsed argparse Namespace
+    Args:
+        parser: argparse subparser to populate
     '''
-    parser = argparse.ArgumentParser(
-        description='Re-tag an IPAM address block lifecycle Status for Infoblox Universal DDI',
-    )
-    parser.add_argument('-V', '--version', action='version', version=f'%(prog)s {__version__}')
     parser.add_argument('--address', default=None, metavar='ADDR',
                         help='Block base address (use with --cidr)')
     parser.add_argument('--cidr', default=None, type=int, metavar='CIDR',
@@ -198,33 +195,26 @@ def parseargs() -> argparse.Namespace:
                         help='IP space name (overrides INI default)')
     parser.add_argument('--dry-run', action='store_true', default=False,
                         help='Preview without making changes')
-    parser.add_argument('-c', '--config', default='uddi.ini', metavar='FILE',
-                        help='Path to INI configuration file (default: uddi.ini)')
-    parser.add_argument('--api-key', default='', metavar='KEY',
-                        help='API key (overrides INI and INFOBLOX_PORTAL_KEY / UDDI_API_KEY env vars)')
-    parser.add_argument('--no-verify-ssl', dest='verify_ssl', action='store_false', default=True,
-                        help='Disable SSL certificate verification (for lab / self-signed certs)')
     parser.add_argument('--json', dest='json_output', action='store_true', default=False,
                         help='Emit a single JSON object to stdout instead of human-readable output')
-
-    log_grp = parser.add_mutually_exclusive_group()
-    log_grp.add_argument('-d', '--debug', action='store_true', default=False,
-                         help='Enable DEBUG logging (shows all API calls)')
-    log_grp.add_argument('-v', '--verbose', action='store_true', default=False,
-                         help='Enable INFO logging')
-
-    return parser.parse_args()
+    add_common_args(parser)
+    return
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def run(args: argparse.Namespace) -> int:
     '''
-    Main entry point: resolve credentials/space, match the block(s), retag.
+    Resolve credentials/space, match the block(s), and re-tag.
+
+    Args:
+        args: Parsed argparse Namespace
+
+    Returns:
+        Process exit code
     '''
-    args = parseargs()
     setup_logging(debug=args.debug, verbose=args.verbose)
     logger.debug('Arguments: %s', args)
 
@@ -263,8 +253,4 @@ def main() -> None:
         print(json.dumps({'status': args.status, 'changed': changed, 'dry_run': args.dry_run}))
     else:
         print_result(changed, args.status, args.dry_run)
-    return
-
-
-if __name__ == '__main__':
-    main()
+    return 0

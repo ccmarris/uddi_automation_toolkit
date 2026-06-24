@@ -1,19 +1,51 @@
 # Universal DDI Site Toolkit
 
-Tag-driven site provisioning, decommissioning, querying, and template
-authoring for **Infoblox Universal DDI**.
+Tag-driven site, address-block, and DNS provisioning, decommissioning,
+querying, and template authoring for **Infoblox Universal DDI**.
 
-| Tool | Purpose |
-|------|---------|
-| `provision_site.py` | Bring up a new network site end-to-end |
-| `decommission_site.py` | Tear down a previously provisioned site |
-| `query_site.py` | Read-only inspection of a provisioned site |
-| `batch_provision.py` | Provision or decommission multiple sites sequentially |
-| `web_server.py` | Browser-based UI for templates and execution |
-| `site_template_builder.html` | Standalone offline YAML template builder |
+The toolkit is packaged as `uddi_toolkit` and exposes a single `uddi`
+command with subcommands:
 
-All operational scripts share the same YAML template format and INI
-configuration file.
+| Command | Purpose |
+|---------|---------|
+| `uddi provision {site\|address-block\|dns}` | Create resources from a template |
+| `uddi decommission {site\|address-block\|dns}` | Tear them down |
+| `uddi query {site\|address-block\|dns}` | Read-only inspection |
+| `uddi validate -t FILE` | Structural template validation (no API calls) |
+| `uddi drift -t FILE` | Compare a site template against live state |
+| `uddi batch --action ...` | Provision/decommission many templates |
+| `uddi retag-block ...` | Reset an address block's lifecycle Status |
+| `uddi web` | Browser-based UI for templates and execution |
+
+All commands share the same YAML template format and INI configuration file.
+
+---
+
+## Installation
+
+```bash
+# from the project root (use a virtualenv)
+pip install -e .
+```
+
+This installs the `uddi` console command. You can also run it without
+installing via `python -m uddi_toolkit ...` (with `src/` on `PYTHONPATH`).
+
+> **Migration note (v2.0):** the former top-level scripts moved into the
+> `uddi_toolkit` package and are now subcommands. Examples elsewhere in this
+> document written as `python3 <script>.py ...` map to the `uddi` CLI:
+>
+> | Old | New |
+> |-----|-----|
+> | `python3 provision_site.py -t F` | `uddi provision site -t F` |
+> | `python3 decommission_site.py -t F` | `uddi decommission site -t F` |
+> | `python3 query_site.py -t F` | `uddi query site -t F` |
+> | `python3 provision_block.py -t F` | `uddi provision address-block -t F` |
+> | `python3 provision_dns.py -t F` | `uddi provision dns -t F` |
+> | `python3 batch_provision.py ...` | `uddi batch ...` |
+> | `python3 retag_block.py ...` | `uddi retag-block ...` |
+> | `python3 web_server.py` | `uddi web` |
+> | `python3 drift_detect.py -t F` | `uddi drift -t F` |
 
 ---
 

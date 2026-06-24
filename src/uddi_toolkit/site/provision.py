@@ -154,8 +154,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
-from uddi_client import UDDIClient, UDDIError
-from uddi_utils import env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, reverse_zone_fqdn
+from uddi_toolkit.client import UDDIClient, UDDIError
+from uddi_toolkit.core import env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, reverse_zone_fqdn, add_common_args
 
 logger = logging.getLogger(__name__)
 
@@ -1400,28 +1400,13 @@ def print_result(result: ProvisionResult) -> None:
 # Configuration and CLI
 # ---------------------------------------------------------------------------
 
-def parseargs() -> argparse.Namespace:
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     '''
-    Parse command-line arguments.
+    Add module-specific command-line arguments to the given parser.
 
-    Returns:
-        Parsed argparse Namespace
+    Args:
+        parser: ArgumentParser to which the arguments are added
     '''
-    parser = argparse.ArgumentParser(
-        description='Tag-driven site provisioning for Infoblox Universal DDI',
-        epilog=(
-            'Site parameters are resolved from (highest to lowest priority): '
-            'CLI flags > YAML template (--template) > INI file defaults.'
-        ),
-    )
-
-    # Version
-    parser.add_argument(
-        '-V', '--version',
-        action='version',
-        version=f'%(prog)s {__version__}',
-    )
-
     # YAML template
     parser.add_argument(
         '-t', '--template',
@@ -1529,40 +1514,6 @@ def parseargs() -> argparse.Namespace:
         default=None,
         help='Create reverse (in-addr.arpa) DNS zones for each provisioned subnet',
     )
-    parser.add_argument(
-        '-c', '--config',
-        default='uddi.ini',
-        metavar='FILE',
-        help='Path to INI configuration file (default: uddi.ini in current working directory)',
-    )
-    parser.add_argument(
-        '--api-key',
-        default='',
-        metavar='KEY',
-        help='API key (overrides INI file and INFOBLOX_PORTAL_KEY / UDDI_API_KEY env vars)',
-    )
-    parser.add_argument(
-        '--no-verify-ssl',
-        dest='verify_ssl',
-        action='store_false',
-        default=True,
-        help='Disable SSL certificate verification (for lab / self-signed certs)',
-    )
-
-    # Logging
-    log_grp = parser.add_mutually_exclusive_group()
-    log_grp.add_argument(
-        '-d', '--debug',
-        action='store_true',
-        default=False,
-        help='Enable DEBUG logging (shows all API calls)',
-    )
-    log_grp.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        default=False,
-        help='Enable INFO logging',
-    )
 
     # Idempotency
     parser.add_argument(
@@ -1584,21 +1535,22 @@ def parseargs() -> argparse.Namespace:
              'log messages still go to stderr',
     )
 
-    return parser.parse_args()
+    add_common_args(parser)
+
+    return
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def run(args: argparse.Namespace) -> int:
     '''
     Main entry point.
 
     Reads configuration and optional YAML template, builds SiteConfig,
     runs the provisioner, and prints a summary.
     '''
-    args = parseargs()
     setup_logging(debug=args.debug, verbose=args.verbose)
 
     logger.debug('Arguments: %s', args)
@@ -1647,8 +1599,4 @@ def main() -> None:
         print(json.dumps(dataclasses.asdict(result)))
     else:
         print_result(result)
-    return
-
-
-if __name__ == '__main__':
-    main()
+    return 0

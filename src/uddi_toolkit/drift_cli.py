@@ -57,22 +57,22 @@ __author__ = 'Chris Marrison'
 __author_email__ = 'chris@infoblox.com'
 
 import argparse
+import dataclasses
 import json
 import logging
-import os
-import subprocess
-import sys
 
-from uddi_utils import (
+from uddi_toolkit.client import UDDIClient, UDDIError
+from uddi_toolkit.core import (
+    add_common_args,
     detect_drift,
     load_yaml_template,
+    read_config,
+    resolve_credentials,
     setup_logging,
 )
+from uddi_toolkit.site import query as site_query
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_CONFIG = 'uddi.ini'
-QUERY_SCRIPT = os.path.join(os.path.dirname(__file__), 'query_site.py')
 
 _SEVERITY_PREFIX = {
     'error':   '✗',
@@ -89,70 +89,53 @@ _CATEGORY_LABEL = {
 }
 
 
-def parseargs() -> argparse.Namespace:
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     '''
-    Parse command-line arguments.
+    Add the drift command's arguments to the given parser.
+
+    Args:
+        parser: argparse subparser to populate
     '''
-    p = argparse.ArgumentParser(
-        description='Detect configuration drift for a UDDI site template',
-    )
-    p.add_argument(
-        '-t', '--template',
-        required=True,
-        help='Path to YAML site template',
-    )
-    p.add_argument(
-        '-c', '--config',
-        default=DEFAULT_CONFIG,
-        help=f'Path to INI credentials file (default: {DEFAULT_CONFIG})',
-    )
-    p.add_argument(
-        '--json',
-        action='store_true',
-        dest='json_output',
-        help='Emit machine-readable JSON result to stdout',
-    )
-    p.add_argument(
-        '-d', '--debug',
-        action='store_true',
-        help='Enable debug logging',
-    )
-    p.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        help='Enable verbose (INFO) logging',
-    )
-    return p.parse_args()
+    parser.add_argument('-t', '--template', required=True,
+                        help='Path to YAML site template')
+    parser.add_argument('--json', dest='json_output', action='store_true',
+                        help='Emit machine-readable JSON result to stdout')
+    add_common_args(parser)
+    return
 
 
-def run_query(template_path: str, config: str) -> dict:
+def run_query(args: argparse.Namespace, template: dict) -> dict:
     '''
-    Execute query_site.py --json and return the parsed result dict.
+    Query the live site state in-process and return it as a plain dict.
 
-    Returns an empty dict on error (caller passes to detect_drift which
-    will report site-not-found).
+    Returns an empty dict on any failure (caller passes to detect_drift,
+    which reports site-not-found).
+
+    Args:
+        args:     Parsed argparse Namespace (credentials/config flags)
+        template: Parsed YAML site template
+
+    Returns:
+        QueryResult as a dict, or {} on error
     '''
-    cmd = [
-        sys.executable,
-        QUERY_SCRIPT,
-        '-t', template_path,
-        '-c', config,
-        '--json',
-    ]
-    logger.debug('Running: %s', ' '.join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-
-    result = {}
-    if proc.returncode != 0:
-        logger.warning('query_site.py exited %d: %s', proc.returncode,
-                       (proc.stderr or proc.stdout).strip())
+    verify_ssl_override = None if args.verify_ssl else False
+    api_key, base_url, verify_ssl = resolve_credentials(
+        args.api_key, args.config, verify_ssl_override,
+    )
+    live: dict = {}
+    if not api_key:
+        logger.warning('No API key found; treating site as not provisioned')
     else:
+        cfg_file = read_config(args.config)
+        ini = dict(cfg_file['DEFAULTS']) if cfg_file.has_section('DEFAULTS') else {}
+        client = UDDIClient(url=base_url, api_key=api_key, verify_ssl=verify_ssl)
         try:
-            result = json.loads(proc.stdout)
-        except json.JSONDecodeError as exc:
-            logger.warning('Failed to parse query output: %s', exc)
-
-    return result
+            query_cfg = site_query.template_to_query_config(template, ini, args)
+            result = site_query.SiteQuerier(client, query_cfg).query()
+            live = dataclasses.asdict(result)
+        except (UDDIError, SystemExit) as exc:
+            logger.warning('Live query failed (%r); treating site as not provisioned', exc)
+    return live
 
 
 def print_report(result: dict) -> None:
@@ -200,14 +183,22 @@ def print_report(result: dict) -> None:
     return
 
 
-def main() -> None:
-    args = parseargs()
+def run(args: argparse.Namespace) -> int:
+    '''
+    Compare a site template against live state and report drift.
+
+    Args:
+        args: Parsed argparse Namespace
+
+    Returns:
+        Exit code: 2 if not provisioned, 1 if drifted, 0 if clean
+    '''
     setup_logging(debug=args.debug, verbose=args.verbose)
 
     template = load_yaml_template(args.template)
     site_name = str((template.get('site') or {}).get('name', '')).strip()
 
-    live = run_query(args.template, args.config)
+    live = run_query(args, template)
     result = detect_drift(template, live, site_name=site_name)
 
     if args.json_output:
@@ -216,12 +207,9 @@ def main() -> None:
         print_report(result)
 
     if not result.get('found'):
-        sys.exit(2)
+        exitcode = 2
     elif result.get('drifted'):
-        sys.exit(1)
+        exitcode = 1
     else:
-        sys.exit(0)
-
-
-if __name__ == '__main__':
-    main()
+        exitcode = 0
+    return exitcode

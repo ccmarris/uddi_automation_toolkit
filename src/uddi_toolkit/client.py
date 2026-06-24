@@ -12,7 +12,7 @@
     instantiate UDDIClient in any script that needs to talk to the API.
 
  Usage:
-    from uddi_client import UDDIClient
+    from uddi_toolkit.client import UDDIClient
 
     client = UDDIClient(url='https://csp.infoblox.com', api_key='…')
     data   = client.get('/ipam/ip_space', params={'_filter': 'name=="prod"'})

@@ -268,6 +268,37 @@ def setup_logging(debug: bool = False, verbose: bool = False) -> None:
     return
 
 
+def add_common_args(parser) -> None:
+    '''
+    Add the credential, config, and logging flags shared by every command.
+
+    Args:
+        parser: argparse parser (or subparser) to add the common flags to
+    '''
+    parser.add_argument(
+        '-c', '--config', default='uddi.ini', metavar='FILE',
+        help='Path to INI configuration file (default: uddi.ini)',
+    )
+    parser.add_argument(
+        '--api-key', default='', metavar='KEY',
+        help='API key (overrides INI and INFOBLOX_PORTAL_KEY / UDDI_API_KEY env vars)',
+    )
+    parser.add_argument(
+        '--no-verify-ssl', dest='verify_ssl', action='store_false', default=True,
+        help='Disable SSL certificate verification (for lab / self-signed certs)',
+    )
+    log_grp = parser.add_mutually_exclusive_group()
+    log_grp.add_argument(
+        '-d', '--debug', action='store_true', default=False,
+        help='Enable DEBUG logging (shows all API calls)',
+    )
+    log_grp.add_argument(
+        '-v', '--verbose', action='store_true', default=False,
+        help='Enable INFO logging',
+    )
+    return
+
+
 def reverse_zone_fqdn(address: str, cidr: int) -> str:
     '''
     Compute the in-addr.arpa zone name for a subnet.

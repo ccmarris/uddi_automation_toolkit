@@ -58,8 +58,8 @@ import json
 import logging
 import sys
 
-from uddi_client import UDDIClient, UDDIError
-from uddi_utils import (
+from uddi_toolkit.client import UDDIClient, UDDIError
+from uddi_toolkit.core import (
     env_config,
     find_zone,
     load_yaml_template,
@@ -67,6 +67,7 @@ from uddi_utils import (
     resolve_credentials,
     resolve_dns_view,
     setup_logging,
+    add_common_args,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,48 +179,37 @@ def print_result(result: dict) -> None:
 # Configuration and CLI
 # ---------------------------------------------------------------------------
 
-def parseargs() -> argparse.Namespace:
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     '''
-    Parse command-line arguments.
+    Add module-specific command-line arguments to the parser.
 
-    Returns:
-        Parsed argparse Namespace
+    Args:
+        parser: The argparse parser to populate
     '''
-    parser = argparse.ArgumentParser(
-        description='Read-only DNS inspection for Infoblox Universal DDI',
-    )
-    parser.add_argument('-V', '--version', action='version', version=f'%(prog)s {__version__}')
     parser.add_argument('-t', '--template', required=True, metavar='FILE',
                         help='Path to a YAML dns template')
     parser.add_argument('--view', default=None, metavar='VIEW',
                         help='DNS view name (overrides template/INI)')
     parser.add_argument('--json', action='store_true', default=False,
                         help='Output machine-readable JSON instead of formatted text')
-    parser.add_argument('-c', '--config', default='uddi.ini', metavar='FILE',
-                        help='Path to INI configuration file (default: uddi.ini)')
-    parser.add_argument('--api-key', default='', metavar='KEY',
-                        help='API key (overrides INI and INFOBLOX_PORTAL_KEY / UDDI_API_KEY env vars)')
-    parser.add_argument('--no-verify-ssl', dest='verify_ssl', action='store_false', default=True,
-                        help='Disable SSL certificate verification (for lab / self-signed certs)')
-
-    log_grp = parser.add_mutually_exclusive_group()
-    log_grp.add_argument('-d', '--debug', action='store_true', default=False,
-                         help='Enable DEBUG logging (shows all API calls)')
-    log_grp.add_argument('-v', '--verbose', action='store_true', default=False,
-                         help='Enable INFO logging')
-
-    return parser.parse_args()
+    add_common_args(parser)
+    return
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def run(args: argparse.Namespace) -> int:
     '''
-    Main entry point: read config + template, run the query, print a report.
+    Run the DNS query: read config + template, run the query, print a report.
+
+    Args:
+        args: Parsed argparse Namespace
+
+    Returns:
+        Process exit code (0 on success)
     '''
-    args = parseargs()
     setup_logging(debug=args.debug, verbose=args.verbose)
     logger.debug('Arguments: %s', args)
 
@@ -269,8 +259,4 @@ def main() -> None:
         print(json.dumps(result, indent=2))
     else:
         print_result(result)
-    return
-
-
-if __name__ == '__main__':
-    main()
+    return 0
