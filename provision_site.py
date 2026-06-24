@@ -1155,10 +1155,12 @@ class SiteProvisioner:
                     'space':   self._space_id,
                 }],
                 'auto_generate_records': True,
-                # host_names drives A/PTR generation; zone is the auth-zone ID.
+                # host_names drives A/PTR generation; zone is the auth-zone ID
+                # and name is the label WITHIN that zone (bare hostname) — using
+                # the FQDN here doubles the zone (host.zone.zone).
                 # (The IpamHost schema has no dns_zone/enable_dhcp fields.)
                 'host_names': [{
-                    'name':         fqdn,
+                    'name':         hdef.hostname,
                     'zone':         self._zone_id,
                     'primary_name': True,
                 }],
