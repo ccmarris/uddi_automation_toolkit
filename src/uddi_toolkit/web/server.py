@@ -102,20 +102,10 @@ import sys
 import yaml
 
 from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
-from uddi_utils import detect_drift, env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, template_type, validate_template
+from uddi_toolkit.core import detect_drift, env_config, load_yaml_template, read_config, resolve_credentials, setup_logging, template_type, validate_template
 
-# Maps (action, template type) to the backend script that handles it.
-SCRIPTS_BY_TYPE: dict = {
-    'site':          {'provision': 'provision_site.py',
-                      'decommission': 'decommission_site.py',
-                      'query': 'query_site.py'},
-    'address-block': {'provision': 'provision_block.py',
-                      'decommission': 'decommission_block.py',
-                      'query': 'query_block.py'},
-    'dns':           {'provision': 'provision_dns.py',
-                      'decommission': 'decommission_dns.py',
-                      'query': 'query_dns.py'},
-}
+# Template types the CLI can act on (all support provision/decommission/query).
+VALID_TYPES = ('site', 'address-block', 'dns')
 
 logger = logging.getLogger(__name__)
 
@@ -201,18 +191,22 @@ def template_type_of(fpath: str) -> str:
     return ttype
 
 
-def script_for(action: str, ttype: str) -> str:
+def cli_command(action: str, ttype: str) -> list:
     '''
-    Resolve the backend script for an action and template type.
+    Build the base ``python -m uddi_toolkit`` command for an action and type.
 
     Args:
         action: 'provision' | 'decommission' | 'query'
         ttype:  Template type from template_type()
 
     Returns:
-        Script filename, or '' if the combination is unsupported
+        Command list prefix, or [] if the template type is unsupported
     '''
-    return SCRIPTS_BY_TYPE.get(ttype, {}).get(action, '')
+    if ttype not in VALID_TYPES:
+        cmd = []
+    else:
+        cmd = [sys.executable, '-m', 'uddi_toolkit', action, ttype]
+    return cmd
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +474,7 @@ def _stream_script(cmd: list) -> Response:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            cwd=SCRIPT_DIR,
+            # inherit the launch cwd so a relative -c uddi.ini resolves there
         )
         for line in proc.stdout:
             yield f'data: {line}\n\n'
@@ -526,18 +520,13 @@ def provision():
     else:
         tmpl_path = template_path(rel)
         ttype = template_type_of(tmpl_path)
-        script = script_for('provision', ttype)
+        base_cmd = cli_command('provision', ttype)
         if not os.path.isfile(tmpl_path):
             response = (jsonify({'error': f'Template not found: {rel}'}), 404)
-        elif not script:
+        elif not base_cmd:
             response = (jsonify({'error': f'provision is not supported for template type {ttype!r}'}), 400)
         else:
-            cmd = [
-                sys.executable,
-                os.path.join(SCRIPT_DIR, script),
-                '-t', tmpl_path,
-                '-c', CONFIG_FILE,
-            ]
+            cmd = base_cmd + ['-t', tmpl_path, '-c', CONFIG_FILE]
             if dry_run:
                 cmd.append('--dry-run')
             if verbose:
@@ -581,18 +570,13 @@ def decommission():
     else:
         tmpl_path = template_path(rel)
         ttype = template_type_of(tmpl_path)
-        script = script_for('decommission', ttype)
+        base_cmd = cli_command('decommission', ttype)
         if not os.path.isfile(tmpl_path):
             response = (jsonify({'error': f'Template not found: {rel}'}), 404)
-        elif not script:
+        elif not base_cmd:
             response = (jsonify({'error': f'decommission is not supported for template type {ttype!r}'}), 400)
         else:
-            cmd = [
-                sys.executable,
-                os.path.join(SCRIPT_DIR, script),
-                '-t', tmpl_path,
-                '-c', CONFIG_FILE,
-            ]
+            cmd = base_cmd + ['-t', tmpl_path, '-c', CONFIG_FILE]
             if dry_run:
                 cmd.append('--dry-run')
             if verbose:
@@ -633,18 +617,13 @@ def query():
     else:
         tmpl_path = template_path(rel)
         ttype = template_type_of(tmpl_path)
-        script = script_for('query', ttype)
+        base_cmd = cli_command('query', ttype)
         if not os.path.isfile(tmpl_path):
             response = (jsonify({'error': f'Template not found: {rel}'}), 404)
-        elif not script:
+        elif not base_cmd:
             response = (jsonify({'error': f'query is not supported for template type {ttype!r}'}), 400)
         else:
-            cmd = [
-                sys.executable,
-                os.path.join(SCRIPT_DIR, script),
-                '-t', tmpl_path,
-                '-c', CONFIG_FILE,
-            ]
+            cmd = base_cmd + ['-t', tmpl_path, '-c', CONFIG_FILE]
             if verbose and not json_output:
                 cmd.append('-v')
             if json_output:
@@ -673,19 +652,13 @@ def query_json():
     else:
         tmpl_path = template_path(rel)
         ttype = template_type_of(tmpl_path)
-        script = script_for('query', ttype)
+        base_cmd = cli_command('query', ttype)
         if not os.path.isfile(tmpl_path):
             response = (jsonify({'error': f'Template not found: {rel}'}), 404)
-        elif not script:
+        elif not base_cmd:
             response = (jsonify({'error': f'query is not supported for template type {ttype!r}'}), 400)
         else:
-            cmd = [
-                sys.executable,
-                os.path.join(SCRIPT_DIR, script),
-                '-t', tmpl_path,
-                '-c', CONFIG_FILE,
-                '--json',
-            ]
+            cmd = base_cmd + ['-t', tmpl_path, '-c', CONFIG_FILE, '--json']
 
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
@@ -695,7 +668,7 @@ def query_json():
                 try:
                     response = (jsonify(json.loads(proc.stdout)), 200)
                 except json.JSONDecodeError:
-                    response = (jsonify({'error': f'Unexpected output from {script}', 'raw': proc.stdout}), 500)
+                    response = (jsonify({'error': 'Unexpected output from query', 'raw': proc.stdout}), 500)
 
     return response
 
@@ -774,8 +747,7 @@ def drift_check():
                     site_name = str((template.get('site') or {}).get('name', '')).strip()
 
                     cmd = [
-                        sys.executable,
-                        os.path.join(SCRIPT_DIR, 'query_site.py'),
+                        sys.executable, '-m', 'uddi_toolkit', 'query', 'site',
                         '-t', tmpl_path,
                         '-c', CONFIG_FILE,
                         '--json',
@@ -838,87 +810,26 @@ def health():
 # Configuration and CLI
 # ---------------------------------------------------------------------------
 
-def parseargs() -> argparse.Namespace:
-    '''
-    Parse command-line arguments.
-
-    Returns:
-        Parsed argparse Namespace
-    '''
-    parser = argparse.ArgumentParser(
-        description='Web server for the UDDI Automation Toolkit',
-    )
-
-    parser.add_argument(
-        '-V', '--version',
-        action='version',
-        version=f'%(prog)s {__version__}',
-    )
-    parser.add_argument(
-        '-c', '--config',
-        default='uddi.ini',
-        metavar='FILE',
-        help='Path to INI configuration file (default: uddi.ini in current working directory)',
-    )
-    parser.add_argument(
-        '--templates-dir',
-        default=None,
-        metavar='DIR',
-        help='Directory containing site YAML templates (default: ./templates)',
-    )
-    parser.add_argument(
-        '-p', '--port',
-        type=int,
-        default=5000,
-        help='Port to listen on (default: 5000)',
-    )
-    parser.add_argument(
-        '--host',
-        default='127.0.0.1',
-        help='Host address to bind to (default: 127.0.0.1)',
-    )
-    parser.add_argument(
-        '--debug-flask',
-        action='store_true',
-        default=False,
-        help='Enable Flask debug mode (auto-reload on file changes)',
-    )
-
-    log_grp = parser.add_mutually_exclusive_group()
-    log_grp.add_argument(
-        '-d', '--debug',
-        action='store_true',
-        default=False,
-        help='Enable DEBUG logging',
-    )
-    log_grp.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        default=False,
-        help='Enable INFO logging',
-    )
-
-    return parser.parse_args()
-
-
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def run(args: argparse.Namespace) -> int:
     '''
-    Main entry point.
+    Validate configuration, resolve paths, and start the Flask server.
 
-    Validates configuration, resolves paths, then starts the Flask server.
+    Args:
+        args: Parsed argparse Namespace (from the `uddi web` subcommand)
+
+    Returns:
+        Process exit code (0 once the server stops)
     '''
     global CONFIG_FILE, TEMPLATES_DIR
 
-    args = parseargs()
     setup_logging(debug=args.debug, verbose=args.verbose)
-
     logger.debug('Arguments: %s', args)
 
-    # Resolve config file path
+    # Resolve config file path (kept relative; subprocesses inherit the cwd)
     CONFIG_FILE = args.config
 
     # Validate credentials at startup — warn but don't exit if the INI is
@@ -930,11 +841,11 @@ def main() -> None:
             'Execution endpoints will fail until a key is available.', CONFIG_FILE,
         )
 
-    # Resolve templates directory
+    # Resolve templates directory (default ./templates relative to launch cwd)
     if args.templates_dir:
         TEMPLATES_DIR = os.path.abspath(args.templates_dir)
     else:
-        TEMPLATES_DIR = os.path.join(SCRIPT_DIR, 'templates')
+        TEMPLATES_DIR = os.path.abspath('templates')
 
     if not os.path.isdir(TEMPLATES_DIR):
         logger.error('Templates directory not found: %s', TEMPLATES_DIR)
@@ -955,8 +866,4 @@ def main() -> None:
         debug=args.debug_flask,
         threaded=True,
     )
-    return
-
-
-if __name__ == '__main__':
-    main()
+    return 0

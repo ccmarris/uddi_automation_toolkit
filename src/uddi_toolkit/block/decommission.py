@@ -65,14 +65,15 @@ import logging
 import sys
 from dataclasses import dataclass, field
 
-from uddi_client import UDDIClient, UDDIError
-from uddi_utils import (
+from uddi_toolkit.client import UDDIClient, UDDIError
+from uddi_toolkit.core import (
     env_config,
     load_yaml_template,
     read_config,
     resolve_credentials,
     resolve_ip_space,
     setup_logging,
+    add_common_args,
 )
 
 logger = logging.getLogger(__name__)
@@ -294,17 +295,13 @@ def print_result(result: DecommissionBlockResult) -> None:
 # Configuration and CLI
 # ---------------------------------------------------------------------------
 
-def parseargs() -> argparse.Namespace:
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     '''
-    Parse command-line arguments.
+    Add module-specific command-line arguments to the given parser.
 
-    Returns:
-        Parsed argparse Namespace
+    Args:
+        parser: The argparse parser to populate
     '''
-    parser = argparse.ArgumentParser(
-        description='Address-block decommissioning for Infoblox Universal DDI',
-    )
-    parser.add_argument('-V', '--version', action='version', version=f'%(prog)s {__version__}')
     parser.add_argument('-t', '--template', required=True, metavar='FILE',
                         help='Path to a YAML address-block template')
     parser.add_argument('--ip-space', default=None, metavar='SPACE',
@@ -315,33 +312,27 @@ def parseargs() -> argparse.Namespace:
                         help='Preview all steps without making any changes')
     parser.add_argument('--force', action='store_true', default=False,
                         help='Skip the interactive confirmation prompt')
-    parser.add_argument('-c', '--config', default='uddi.ini', metavar='FILE',
-                        help='Path to INI configuration file (default: uddi.ini)')
-    parser.add_argument('--api-key', default='', metavar='KEY',
-                        help='API key (overrides INI and INFOBLOX_PORTAL_KEY / UDDI_API_KEY env vars)')
-    parser.add_argument('--no-verify-ssl', dest='verify_ssl', action='store_false', default=True,
-                        help='Disable SSL certificate verification (for lab / self-signed certs)')
     parser.add_argument('--json', dest='json_output', action='store_true', default=False,
                         help='Emit a single JSON object to stdout instead of human-readable output')
 
-    log_grp = parser.add_mutually_exclusive_group()
-    log_grp.add_argument('-d', '--debug', action='store_true', default=False,
-                         help='Enable DEBUG logging (shows all API calls)')
-    log_grp.add_argument('-v', '--verbose', action='store_true', default=False,
-                         help='Enable INFO logging')
-
-    return parser.parse_args()
+    add_common_args(parser)
+    return
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def run(args: argparse.Namespace) -> int:
     '''
-    Main entry point: read config + template, build config, confirm, run.
+    Entry point: read config + template, build config, confirm, run.
+
+    Args:
+        args: Parsed argparse Namespace
+
+    Returns:
+        Process exit code
     '''
-    args = parseargs()
     setup_logging(debug=args.debug, verbose=args.verbose)
     logger.debug('Arguments: %s', args)
 
@@ -406,8 +397,4 @@ def main() -> None:
         print(json.dumps(dataclasses.asdict(result)))
     else:
         print_result(result)
-    return
-
-
-if __name__ == '__main__':
-    main()
+    return 0

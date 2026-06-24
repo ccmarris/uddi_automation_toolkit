@@ -1,6 +1,6 @@
 [project]
 name = "uddi-automation-toolkit"
-version = "1.1.0"
+version = "2.0.0"
 description = "Tag-driven site, address-block, and DNS provisioning, decommissioning, querying, and template authoring for Infoblox Universal DDI"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,19 +13,14 @@ dependencies = [
 ]
 
 [project.scripts]
-provision-site      = "provision_site:main"
-decommission-site   = "decommission_site:main"
-query-site          = "query_site:main"
-provision-block     = "provision_block:main"
-decommission-block  = "decommission_block:main"
-query-block         = "query_block:main"
-provision-dns       = "provision_dns:main"
-decommission-dns    = "decommission_dns:main"
-query-dns           = "query_dns:main"
-retag-block         = "retag_block:main"
-batch-provision     = "batch_provision:main"
-uddi-web            = "web_server:main"
+uddi = "uddi_toolkit.cli:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"uddi_toolkit.web" = ["static/*", "static/**/*", "site_template_builder.html"]

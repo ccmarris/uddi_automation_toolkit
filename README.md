@@ -1,19 +1,51 @@
 # Universal DDI Site Toolkit
 
-Tag-driven site provisioning, decommissioning, querying, and template
-authoring for **Infoblox Universal DDI**.
+Tag-driven site, address-block, and DNS provisioning, decommissioning,
+querying, and template authoring for **Infoblox Universal DDI**.
 
-| Tool | Purpose |
-|------|---------|
-| `provision_site.py` | Bring up a new network site end-to-end |
-| `decommission_site.py` | Tear down a previously provisioned site |
-| `query_site.py` | Read-only inspection of a provisioned site |
-| `batch_provision.py` | Provision or decommission multiple sites sequentially |
-| `web_server.py` | Browser-based UI for templates and execution |
-| `site_template_builder.html` | Standalone offline YAML template builder |
+The toolkit is packaged as `uddi_toolkit` and exposes a single `uddi`
+command with subcommands:
 
-All operational scripts share the same YAML template format and INI
-configuration file.
+| Command | Purpose |
+|---------|---------|
+| `uddi provision {site\|address-block\|dns}` | Create resources from a template |
+| `uddi decommission {site\|address-block\|dns}` | Tear them down |
+| `uddi query {site\|address-block\|dns}` | Read-only inspection |
+| `uddi validate -t FILE` | Structural template validation (no API calls) |
+| `uddi drift -t FILE` | Compare a site template against live state |
+| `uddi batch --action ...` | Provision/decommission many templates |
+| `uddi retag-block ...` | Reset an address block's lifecycle Status |
+| `uddi web` | Browser-based UI for templates and execution |
+
+All commands share the same YAML template format and INI configuration file.
+
+---
+
+## Installation
+
+```bash
+# from the project root (use a virtualenv)
+pip install -e .
+```
+
+This installs the `uddi` console command. You can also run it without
+installing via `python -m uddi_toolkit ...` (with `src/` on `PYTHONPATH`).
+
+> **Migration note (v2.0):** the former top-level scripts moved into the
+> `uddi_toolkit` package and are now subcommands. Examples elsewhere in this
+> document written as `python3 <script>.py ...` map to the `uddi` CLI:
+>
+> | Old | New |
+> |-----|-----|
+> | `python3 provision_site.py -t F` | `uddi provision site -t F` |
+> | `python3 decommission_site.py -t F` | `uddi decommission site -t F` |
+> | `python3 query_site.py -t F` | `uddi query site -t F` |
+> | `python3 provision_block.py -t F` | `uddi provision address-block -t F` |
+> | `python3 provision_dns.py -t F` | `uddi provision dns -t F` |
+> | `python3 batch_provision.py ...` | `uddi batch ...` |
+> | `python3 retag_block.py ...` | `uddi retag-block ...` |
+> | `python3 web_server.py` | `uddi web` |
+> | `python3 drift_detect.py -t F` | `uddi drift -t F` |
 
 ---
 
@@ -63,20 +95,18 @@ All destructive steps support `--dry-run`.
 
 ```
 Python 3.10+
-pip install -r requirements.txt
+pip install -e .        # installs the `uddi` command + deps (requests, PyYAML, flask)
 ```
 
-`requirements.txt` contains: `requests`, `PyYAML`, `flask`
-
-The standalone template builder (`site_template_builder.html`) is a
-single self-contained HTML file — open it directly in any browser, no
+The standalone template builder (`src/uddi_toolkit/web/site_template_builder.html`)
+is a single self-contained HTML file — open it directly in any browser, no
 server needed.
 
 ---
 
 ## Configuration
 
-Copy `provision_site.ini.example` to `uddi.ini` and fill in:
+Copy `uddi.ini.example` to `uddi.ini` and fill in:
 
 ```ini
 [UDDI]
@@ -96,7 +126,7 @@ dhcp_end_offset   = 250
 > **Security:** `uddi.ini` is listed in `.gitignore` and will never be
 > committed. Keep your API key out of source control.
 
-All scripts default to `uddi.ini` in the current working directory.
+All commands default to `uddi.ini` in the current working directory.
 Override with `-c /path/to/file.ini`.
 
 ### Parameter precedence
@@ -113,11 +143,11 @@ The toolkit supports three kinds of template, distinguished by a top-level
 `type:` field (inferred from structure when omitted, for backward
 compatibility):
 
-| `type:`         | Manages                                  | Scripts                                                              |
-|-----------------|------------------------------------------|---------------------------------------------------------------------|
-| `site`          | Address block + subnets + DNS + hosts    | `provision_site.py` / `decommission_site.py` / `query_site.py`      |
-| `address-block` | IPAM address blocks (with nested children) | `provision_block.py` / `decommission_block.py` / `query_block.py` |
-| `dns`           | Auth zones + standalone DNS records      | `provision_dns.py` / `decommission_dns.py` / `query_dns.py`         |
+| `type:`         | Manages                                  | Commands                                                            |
+|-----------------|------------------------------------------|--------------------------------------------------------------------|
+| `site`          | Address block + subnets + DNS + hosts    | `uddi {provision,decommission,query} site`                         |
+| `address-block` | IPAM address blocks (with nested children) | `uddi {provision,decommission,query} address-block`             |
+| `dns`           | Auth zones + standalone DNS records      | `uddi {provision,decommission,query} dns`                          |
 
 `address-block` templates create the pool of blocks that `site` provisioning
 later discovers by `Region` / `Environment` / `Status=available` tags.
@@ -207,7 +237,7 @@ tags:                          # template-wide tags merged onto every block
   CostCentre: CC-EMEA-001
 ```
 
-Run: `provision_block.py -t templates/blocks/emea-prod-pool.yaml --dry-run -v`
+Run: `uddi provision address-block -t templates/blocks/emea-prod-pool.yaml --dry-run -v`
 
 ---
 
@@ -244,7 +274,7 @@ tags:                          # applied to created zones
   Owner: dns-team
 ```
 
-Run: `provision_dns.py -t templates/dns/corp.yaml --dry-run -v`
+Run: `uddi provision dns -t templates/dns/corp.yaml --dry-run -v`
 
 ---
 
@@ -273,29 +303,35 @@ allocated  →  decommissioned
             (decommission --final-status decommissioned — retire the block)
 
 decommissioned  →  available
-                   (retag_block.py --status available — re-enter the pool)
+                   (uddi retag-block --status available — re-enter the pool)
 ```
 
-By default `decommission_site.py` returns the block to `available` so the
+By default `uddi decommission site` returns the block to `available` so the
 site can be re-provisioned. Pass `--final-status decommissioned` to retire a
 block instead; a retired block is picked up by neither provision nor
-decommission, so use `retag_block.py` to return it to the pool.
+decommission, so use `uddi retag-block` to return it to the pool.
 
 ---
 
-## provision_site.py
+## uddi provision
+
+`uddi provision {site|address-block|dns} -t FILE` — creates resources from a
+template. The flags below are for `site`; `address-block` and `dns` take
+`-t/--template`, `--dry-run`, `--no-rollback`, the common credential/logging
+flags, plus `--ip-space`/`--name` (block) or `--view` (dns).
 
 ### Usage
 
 ```
-provision_site.py [-h] [-t FILE]
-                  [-s NAME] [-r REGION] [-e ENV] [-l LOCATION]
-                  [--subnet-size N] [--dns-parent ZONE]
-                  [--dns-view VIEW] [--ip-space SPACE]
-                  [--create-zone | --no-create-zone]
-                  [--create-reverse-zone]
-                  [--no-rollback]
-                  [--dry-run] [-c FILE] [-d | -v] [-V]
+uddi provision site [-h] [-t FILE]
+                    [-s NAME] [-r REGION] [-e ENV] [-l LOCATION]
+                    [--subnet-size N] [--dns-parent ZONE]
+                    [--dns-view VIEW] [--ip-space SPACE]
+                    [--create-zone | --no-create-zone]
+                    [--create-reverse-zone]
+                    [--no-rollback]
+                    [--dry-run] [-c FILE] [--api-key KEY] [--no-verify-ssl]
+                    [-d | -v]
 ```
 
 | Argument | Description |
@@ -315,43 +351,54 @@ provision_site.py [-h] [-t FILE]
 | `--no-rollback` | Leave partial resources in place on failure |
 | `--dry-run` | Preview all steps without making any changes |
 | `-c`, `--config` | INI config file (default: `uddi.ini`) |
+| `--api-key` | API key (overrides INI / env vars) |
+| `--no-verify-ssl` | Disable SSL certificate verification |
 | `-d`, `--debug` | Enable DEBUG logging |
 | `-v`, `--verbose` | Enable INFO logging |
-| `-V`, `--version` | Show version and exit |
+
+(`uddi -V` shows the toolkit version.)
 
 ### Examples
 
 ```bash
 # Dry-run
-python3 provision_site.py -t templates/site-london.yaml --dry-run -v
+uddi provision site -t templates/site-london.yaml --dry-run -v
 
 # Live run
-python3 provision_site.py -t templates/site-london.yaml -v
+uddi provision site -t templates/site-london.yaml -v
 
 # With DHCP ranges and reverse DNS zones
-python3 provision_site.py -t templates/site-london.yaml --create-reverse-zone -v
+uddi provision site -t templates/site-london.yaml --create-reverse-zone -v
 
 # CLI-only (no template)
-python3 provision_site.py -s london -r EMEA -e production -v
+uddi provision site -s london -r EMEA -e production -v
 
 # Different config file
-python3 provision_site.py -t templates/site-london.yaml -c /etc/uddi/uddi.ini -v
+uddi provision site -t templates/site-london.yaml -c /etc/uddi/uddi.ini -v
+
+# Seed the address-block pool, then a DNS zone+records
+uddi provision address-block -t templates/blocks/emea-prod-pool.yaml -v
+uddi provision dns -t templates/dns/corp.yaml -v
 ```
 
 ---
 
-## decommission_site.py
+## uddi decommission
+
+`uddi decommission {site|address-block|dns} -t FILE`. Flags below are for
+`site`; `address-block`/`dns` take `-t`, `--dry-run`, `--force`, and the
+common flags (plus `--ip-space`/`--name` or `--view`).
 
 ### Usage
 
 ```
-decommission_site.py [-h] [-t FILE] [-s NAME]
-                     [--final-status {decommissioned,available}]
-                     [--keep-zone]
-                     [--dns-parent ZONE] [--dns-view VIEW]
-                     [--ip-space SPACE]
-                     [--dry-run] [--force]
-                     [-c FILE] [-d | -v] [-V]
+uddi decommission site [-h] [-t FILE] [-s NAME]
+                       [--final-status {decommissioned,available}]
+                       [--keep-zone]
+                       [--dns-parent ZONE] [--dns-view VIEW]
+                       [--ip-space SPACE]
+                       [--dry-run] [--force]
+                       [-c FILE] [--api-key KEY] [--no-verify-ssl] [-d | -v]
 ```
 
 | Argument | Description |
@@ -366,44 +413,46 @@ decommission_site.py [-h] [-t FILE] [-s NAME]
 | `--dry-run` | Preview all steps without making any changes |
 | `--force` | Skip the interactive confirmation prompt |
 | `-c`, `--config` | INI config file (default: `uddi.ini`) |
+| `--api-key` | API key (overrides INI / env vars) |
+| `--no-verify-ssl` | Disable SSL certificate verification |
 | `-d`, `--debug` | Enable DEBUG logging |
 | `-v`, `--verbose` | Enable INFO logging |
-| `-V`, `--version` | Show version and exit |
 
 ### Examples
 
 ```bash
 # Dry-run
-python3 decommission_site.py -t templates/site-london.yaml --dry-run -v
+uddi decommission site -t templates/site-london.yaml --dry-run -v
 
 # Live run (prompts for confirmation)
-python3 decommission_site.py -t templates/site-london.yaml -v
+uddi decommission site -t templates/site-london.yaml -v
 
 # Non-interactive (CI/pipeline)
-python3 decommission_site.py -t templates/site-london.yaml --force -v
+uddi decommission site -t templates/site-london.yaml --force -v
 
 # Retire the block instead of returning it to the pool
-python3 decommission_site.py -t templates/site-london.yaml --final-status decommissioned --force -v
+uddi decommission site -t templates/site-london.yaml --final-status decommissioned --force -v
 
 # Recover a retired/stuck block back into the available pool
-python3 retag_block.py --address 10.20.0.0 --cidr 16 -v
-python3 retag_block.py --site london -v
+uddi retag-block --address 10.20.0.0 --cidr 16 -v
+uddi retag-block --site london -v
 ```
 
 ---
 
-## query_site.py
+## uddi query
 
-Read-only inspection of a provisioned site. Makes no changes to the
-infrastructure — safe to run at any time.
+Read-only inspection. Makes no changes to the infrastructure — safe to run
+at any time. Works for `site`, `address-block`, and `dns` templates; flags
+below are for `site`.
 
 ### Usage
 
 ```
-query_site.py [-h] [-t FILE]
-              [-s SITE] [--dns-parent ZONE] [--dns-view VIEW]
-              [--ip-space SPACE] [--json]
-              [-c FILE] [-d | -v] [-V]
+uddi query site [-h] [-t FILE]
+                [-s SITE] [--dns-parent ZONE] [--dns-view VIEW]
+                [--ip-space SPACE] [--json]
+                [-c FILE] [--api-key KEY] [--no-verify-ssl] [-d | -v]
 ```
 
 | Argument | Description |
@@ -415,36 +464,57 @@ query_site.py [-h] [-t FILE]
 | `--ip-space` | IP space name |
 | `--json` | Emit machine-readable JSON instead of formatted text |
 | `-c`, `--config` | INI config file (default: `uddi.ini`) |
+| `--api-key` | API key (overrides INI / env vars) |
+| `--no-verify-ssl` | Disable SSL certificate verification |
 | `-d`, `--debug` | Enable DEBUG logging |
 | `-v`, `--verbose` | Enable INFO logging |
-| `-V`, `--version` | Show version and exit |
 
 ### Examples
 
 ```bash
 # Human-readable report
-python3 query_site.py -t templates/site-london.yaml -v
+uddi query site -t templates/site-london.yaml -v
 
 # Machine-readable JSON
-python3 query_site.py -t templates/site-london.yaml --json | python3 -m json.tool
+uddi query site -t templates/site-london.yaml --json | python3 -m json.tool
+
+# Inspect a block pool or a DNS template's zones/records
+uddi query address-block -t templates/blocks/emea-prod-pool.yaml
+uddi query dns -t templates/dns/corp.yaml --json
 ```
 
 ---
 
-## batch_provision.py
+## uddi validate / uddi drift
 
-Runs provision or decommission sequentially across multiple templates.
-Each site is executed as a subprocess so a single failure does not
-prevent the remaining sites from being processed.
+```bash
+# Structural validation only (no API calls) — works for all template types
+uddi validate -t templates/dns/corp.yaml
+
+# Compare a site template against live API state (site templates only)
+uddi drift -t templates/site-london.yaml
+```
+
+`validate` exits non-zero if the template has schema errors. `drift` exits
+`0` (no drift), `1` (drift detected), or `2` (site not provisioned).
+
+---
+
+## uddi batch
+
+Runs provision or decommission sequentially across multiple templates of
+**any type** (it picks the right command per template's `type:`). Each
+template runs as a `python -m uddi_toolkit …` subprocess, so a single
+failure does not prevent the remaining templates from being processed.
 
 ### Usage
 
 ```
-batch_provision.py --action {provision,decommission}
-                   [--templates-dir DIR | --templates FILE [FILE ...]]
-                   [--dry-run] [--force] [--no-rollback]
-                   [--stop-on-error]
-                   [-c FILE] [-d | -v] [-V]
+uddi batch --action {provision,decommission}
+           [--templates-dir DIR | --templates FILE [FILE ...]]
+           [--dry-run] [--force] [--no-rollback]
+           [--stop-on-error]
+           [-c FILE] [--api-key KEY] [--no-verify-ssl] [-d | -v]
 ```
 
 | Argument | Description |
@@ -452,47 +522,49 @@ batch_provision.py --action {provision,decommission}
 | `--action` | `provision` or `decommission` (required) |
 | `--templates-dir` | Directory of `.yaml`/`.yml` templates to process |
 | `--templates` | One or more explicit template paths |
-| `--dry-run` | Forward `--dry-run` to each child script |
-| `--force` | Forward `--force` to decommission_site.py |
-| `--no-rollback` | Forward `--no-rollback` to provision_site.py |
+| `--dry-run` | Forward `--dry-run` to each run |
+| `--force` | Forward `--force` to decommission runs |
+| `--no-rollback` | Forward `--no-rollback` to provision runs |
 | `--stop-on-error` | Abort after the first failed template |
 | `-c`, `--config` | INI config file (default: `uddi.ini`) |
+| `--api-key` / `--no-verify-ssl` | Forwarded to each run |
 
 ### Examples
 
 ```bash
-# Dry-run all templates in a directory
-python3 batch_provision.py --action provision --templates-dir templates --dry-run -v
+# Dry-run all templates in a directory (any mix of site/block/dns)
+uddi batch --action provision --templates-dir templates --dry-run -v
 
 # Provision specific templates
-python3 batch_provision.py --action provision \
-    --templates templates/site-london.yaml templates/site-paris.yaml -v
+uddi batch --action provision \
+    --templates templates/site-london.yaml templates/blocks/emea-prod-pool.yaml -v
 
 # Decommission all, non-interactively, stop on first failure
-python3 batch_provision.py --action decommission \
+uddi batch --action decommission \
     --templates-dir templates --force --stop-on-error -v
 ```
 
 ---
 
-## web_server.py
+## uddi web
 
 Flask-based web UI. Provides a browser interface for managing templates
 and executing provision / decommission / query operations with real-time
-streaming output.
+streaming output. The UI shows each template's type as a badge and adjusts
+the available actions accordingly.
 
 ### Usage
 
 ```
-web_server.py [-c CONFIG] [--templates-dir DIR]
-              [-p PORT] [--host HOST] [--debug-flask]
-              [-d | -v] [-V]
+uddi web [-c CONFIG] [--templates-dir DIR]
+         [-p PORT] [--host HOST] [--debug-flask]
+         [--api-key KEY] [--no-verify-ssl] [-d | -v]
 ```
 
 | Argument | Description |
 |----------|-------------|
 | `-c`, `--config` | INI config file (default: `uddi.ini`) |
-| `--templates-dir` | Template directory (default: `templates/` alongside the script) |
+| `--templates-dir` | Template directory (default: `./templates`) |
 | `-p`, `--port` | Port to listen on (default: `5000`) |
 | `--host` | Host to bind (default: `127.0.0.1`) |
 | `--debug-flask` | Enable Flask debug/auto-reload mode |
@@ -502,9 +574,12 @@ web_server.py [-c CONFIG] [--templates-dir DIR]
 ### Starting the server
 
 ```bash
-python3 web_server.py -c uddi.ini -v
+uddi web -c uddi.ini -v
 # Open http://127.0.0.1:5000/
 ```
+
+Run it from the directory that holds your `uddi.ini` and `templates/`
+(those paths resolve relative to the launch directory).
 
 ### API endpoints
 
@@ -520,6 +595,8 @@ python3 web_server.py -c uddi.ini -v
 | `POST` | `/api/decommission` | Stream decommission execution (SSE) |
 | `POST` | `/api/query` | Stream query execution (SSE) |
 | `POST` | `/api/query-json` | Run query and return structured JSON |
+| `POST` | `/api/validate` | Validate a template schema (no API calls) |
+| `POST` | `/api/drift` | Compare a site template against live state |
 | `GET` | `/api/config` | Return non-secret config values |
 | `GET` | `/api/health` | Health check |
 
@@ -542,10 +619,14 @@ subnet/host/tag lists, download and copy-to-clipboard buttons, and
 CLI command hints that update as you type.
 
 ```bash
-open site_template_builder.html          # macOS
-xdg-open site_template_builder.html     # Linux
-start site_template_builder.html        # Windows
+# the file lives at src/uddi_toolkit/web/site_template_builder.html
+open src/uddi_toolkit/web/site_template_builder.html       # macOS
+xdg-open src/uddi_toolkit/web/site_template_builder.html   # Linux
+start src/uddi_toolkit/web/site_template_builder.html      # Windows
 ```
+
+It is also served by the running web UI at
+`http://127.0.0.1:5000/site_template_builder.html`.
 
 ---
 
@@ -553,11 +634,10 @@ start site_template_builder.html        # Windows
 
 | Module | Provides |
 |--------|----------|
-| `uddi_client.py` | `UDDIClient` — HTTP get/post/patch/delete wrapper with auth |
-| `uddi_utils.py` | `load_yaml_template`, `read_config`, `setup_logging`, `reverse_zone_fqdn` |
+| `uddi_toolkit.client` | `UDDIClient` / `UDDIError` — HTTP get/post/patch/delete wrapper (+ `get_all` pagination) |
+| `uddi_toolkit.core` | `load_yaml_template`, `read_config`, `resolve_credentials`, `setup_logging`, `template_type`, `validate_template`, `build_record_body`, `detect_drift`, `add_common_args`, … |
 
-These are imported by all operational scripts and are not intended to be
-run directly.
+These are imported by every command module and are not run directly.
 
 ---
 
@@ -565,29 +645,41 @@ run directly.
 
 ```
 uddi_automation_toolkit/
-├── provision_site.py           # Provisioning script
-├── decommission_site.py        # Decommissioning script
-├── query_site.py               # Read-only site inspector
-├── batch_provision.py          # Batch runner
-├── web_server.py               # Flask web UI
-├── uddi_client.py              # Shared API client
-├── uddi_utils.py               # Shared utility functions
-├── site_template_builder.html  # Standalone offline template builder
-├── uddi.ini                    # Your config (not committed — see .gitignore)
-├── uddi.ini.example            # Config template
-├── requirements.txt
+├── pyproject.toml              # packaging + the `uddi` console entry point
 ├── README.md
-├── static/
-│   ├── index.html              # Web UI frontend
-│   └── app.js                  # Web UI JavaScript
-└── templates/
-    ├── site-london.yaml        # Full-featured example
-    └── site-minimal.yaml       # Minimal example (uses INI defaults)
+├── uddi.ini.example            # config template
+├── uddi.ini                    # your config (not committed — see .gitignore)
+├── templates/                  # your YAML templates (user data)
+│   ├── site-london.yaml
+│   ├── blocks/emea-prod-pool.yaml
+│   └── dns/corp.yaml
+└── src/uddi_toolkit/
+    ├── cli.py                  # unified `uddi` CLI (subcommand registry)
+    ├── __main__.py             # enables `python -m uddi_toolkit`
+    ├── client.py               # shared API client
+    ├── core.py                 # shared helpers (config, templates, records, drift)
+    ├── batch.py  retag.py  drift_cli.py
+    ├── site/   {provision,decommission,query}.py
+    ├── block/  {provision,decommission,query}.py
+    ├── dns/    {provision,decommission,query}.py
+    └── web/
+        ├── server.py           # Flask web UI
+        ├── static/             # index.html + app.js
+        └── site_template_builder.html
 ```
 
 ---
 
 ## Changelog
+
+### Toolkit
+
+| Version | Changes |
+|---------|---------|
+| 2.0.0 | Restructured into the installable `uddi_toolkit` package with a single `uddi` CLI (`uddi <verb> <type>`); added `address-block` and `dns` template types, `validate`/`drift`/`retag-block` commands, and web-UI type awareness |
+| 1.x | Standalone per-tool scripts (`provision_site.py`, …) |
+
+The per-tool history below predates the 2.0 package restructure.
 
 ### provision_site.py
 

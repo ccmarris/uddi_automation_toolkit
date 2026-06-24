@@ -86,12 +86,9 @@ from dataclasses import dataclass, field
 
 import yaml
 
-from uddi_utils import setup_logging, template_type
+from uddi_toolkit.core import add_common_args, setup_logging, template_type
 
 logger = logging.getLogger(__name__)
-
-# Directory containing this script — used to locate sibling scripts
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # ---------------------------------------------------------------------------
@@ -197,11 +194,7 @@ def resolve_templates(
 # Per-template execution
 # ---------------------------------------------------------------------------
 
-SCRIPTS_BY_TYPE = {
-    'site':          {'provision': 'provision_site.py', 'decommission': 'decommission_site.py'},
-    'address-block': {'provision': 'provision_block.py', 'decommission': 'decommission_block.py'},
-    'dns':           {'provision': 'provision_dns.py', 'decommission': 'decommission_dns.py'},
-}
+VALID_TYPES = ('site', 'address-block', 'dns')
 
 
 def _template_type_of(template_path: str) -> str:
@@ -237,12 +230,12 @@ def run_template(template_path: str, cfg: BatchConfig) -> tuple:
         Tuple of (returncode: int, stdout: str, stderr: str)
     '''
     ttype = _template_type_of(template_path)
-    script_name = SCRIPTS_BY_TYPE.get(ttype, {}).get(cfg.action, '')
-    if not script_name:
-        result = (1, '', f'{cfg.action} not supported for template type {ttype!r}: {template_path}')
+    if ttype not in VALID_TYPES:
+        result = (1, '', f'Unknown template type {ttype!r}: {template_path}')
     else:
-        script_path = os.path.join(SCRIPT_DIR, script_name)
-        cmd = [sys.executable, script_path, '-t', template_path, '-c', cfg.config]
+        # Invoke the unified CLI in a subprocess so per-template failures stay isolated
+        cmd = [sys.executable, '-m', 'uddi_toolkit', cfg.action, ttype,
+               '-t', template_path, '-c', cfg.config]
 
         if cfg.api_key:
             cmd.extend(['--api-key', cfg.api_key])
@@ -375,28 +368,13 @@ def print_batch_result(result: BatchResult, action: str, dry_run: bool) -> None:
 # Configuration and CLI
 # ---------------------------------------------------------------------------
 
-def parseargs() -> argparse.Namespace:
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     '''
-    Parse command-line arguments.
+    Add the batch command's arguments to the given parser.
 
-    Returns:
-        Parsed argparse Namespace
+    Args:
+        parser: argparse subparser to populate
     '''
-    parser = argparse.ArgumentParser(
-        description='Sequential batch provisioning/decommissioning for Infoblox Universal DDI',
-        epilog=(
-            'Each template is processed independently; a failure on one site '
-            'does not prevent the remaining sites from being processed unless '
-            '--stop-on-error is set.'
-        ),
-    )
-
-    parser.add_argument(
-        '-V', '--version',
-        action='version',
-        version=f'%(prog)s {__version__}',
-    )
-
     parser.add_argument(
         '--action',
         required=True,
@@ -424,19 +402,19 @@ def parseargs() -> argparse.Namespace:
         '--dry-run',
         action='store_true',
         default=False,
-        help='Forward --dry-run to each child script (preview only)',
+        help='Forward --dry-run to each child run (preview only)',
     )
     parser.add_argument(
         '--force',
         action='store_true',
         default=False,
-        help='Forward --force to decommission_site.py (skip confirmation)',
+        help='Forward --force to decommission runs (skip confirmation)',
     )
     parser.add_argument(
         '--no-rollback',
         action='store_true',
         default=False,
-        help='Forward --no-rollback to provision_site.py',
+        help='Forward --no-rollback to provision runs',
     )
     parser.add_argument(
         '--stop-on-error',
@@ -444,54 +422,24 @@ def parseargs() -> argparse.Namespace:
         default=False,
         help='Abort batch after the first failed template',
     )
-    parser.add_argument(
-        '-c', '--config',
-        default='uddi.ini',
-        metavar='FILE',
-        help='Path to INI configuration file (default: uddi.ini in current working directory)',
-    )
-    parser.add_argument(
-        '--api-key',
-        default='',
-        metavar='KEY',
-        help='API key forwarded to each child script (overrides INI / env vars)',
-    )
-    parser.add_argument(
-        '--no-verify-ssl',
-        action='store_true',
-        default=False,
-        help='Forward --no-verify-ssl to each child script (lab / self-signed certs)',
-    )
-
-    log_grp = parser.add_mutually_exclusive_group()
-    log_grp.add_argument(
-        '-d', '--debug',
-        action='store_true',
-        default=False,
-        help='Enable DEBUG logging',
-    )
-    log_grp.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        default=False,
-        help='Enable INFO logging',
-    )
-
-    return parser.parse_args()
+    add_common_args(parser)
+    return
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def run(args: argparse.Namespace) -> int:
     '''
-    Main entry point.
+    Resolve the template list, run the batch, and print a summary.
 
-    Resolves template list, runs the batch, and prints a summary.
-    Exits with code 1 if any template failed.
+    Args:
+        args: Parsed argparse Namespace
+
+    Returns:
+        Process exit code (1 if any template failed, else 0)
     '''
-    args = parseargs()
     setup_logging(debug=args.debug, verbose=args.verbose)
 
     logger.debug('Arguments: %s', args)
@@ -519,16 +467,10 @@ def main() -> None:
         debug=args.debug,
         stop_on_error=args.stop_on_error,
         api_key=args.api_key,
-        no_verify_ssl=args.no_verify_ssl,
+        no_verify_ssl=not args.verify_ssl,
     )
 
     result = batch_run(cfg)
     print_batch_result(result, args.action, args.dry_run)
 
-    if result.failed:
-        sys.exit(1)
-    return
-
-
-if __name__ == '__main__':
-    main()
+    return 1 if result.failed else 0
