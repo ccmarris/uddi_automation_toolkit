@@ -53,7 +53,7 @@ back unless `--no-rollback` is set.
 | 7 | **Delete** the forward DNS zone (unless `--keep-zone`) |
 | 8 | **Delete** reverse DNS zones if present |
 | 9 | **Delete** all site subnets |
-| 10 | **Reset** the block — `Status=decommissioned`, `Site=unassigned` |
+| 10 | **Reset** the block — `Status=available` (default; `decommissioned` with `--final-status`), `Site=unassigned` |
 
 All destructive steps support `--dry-run`.
 
@@ -266,12 +266,20 @@ discover them.
 Status lifecycle:
 
 ```
-available  →  allocated  →  decommissioned
-            (provision)    (decommission --final-status decommissioned)
+available  →  allocated  →  available
+            (provision)    (decommission — default returns to the pool)
+
+allocated  →  decommissioned
+            (decommission --final-status decommissioned — retire the block)
 
 decommissioned  →  available
-                   (decommission --final-status available)
+                   (retag_block.py --status available — re-enter the pool)
 ```
+
+By default `decommission_site.py` returns the block to `available` so the
+site can be re-provisioned. Pass `--final-status decommissioned` to retire a
+block instead; a retired block is picked up by neither provision nor
+decommission, so use `retag_block.py` to return it to the pool.
 
 ---
 
@@ -350,7 +358,7 @@ decommission_site.py [-h] [-t FILE] [-s NAME]
 |----------|-------------|
 | `-t`, `--template` | Path to YAML site template |
 | `-s`, `--site` | Short site name to decommission |
-| `--final-status` | Block status after teardown: `decommissioned` (default) or `available` |
+| `--final-status` | Block status after teardown: `available` (default, returns to pool) or `decommissioned` (retire) |
 | `--keep-zone` | Leave the forward DNS zone intact |
 | `--dns-parent` | Parent DNS zone |
 | `--dns-view` | DNS view name |
@@ -374,8 +382,12 @@ python3 decommission_site.py -t templates/site-london.yaml -v
 # Non-interactive (CI/pipeline)
 python3 decommission_site.py -t templates/site-london.yaml --force -v
 
-# Reset block back to available (ready to re-provision)
-python3 decommission_site.py -t templates/site-london.yaml --final-status available --force -v
+# Retire the block instead of returning it to the pool
+python3 decommission_site.py -t templates/site-london.yaml --final-status decommissioned --force -v
+
+# Recover a retired/stuck block back into the available pool
+python3 retag_block.py --address 10.20.0.0 --cidr 16 -v
+python3 retag_block.py --site london -v
 ```
 
 ---

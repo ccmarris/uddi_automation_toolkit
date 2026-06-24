@@ -659,7 +659,9 @@ function _appendCleanSummary(code) {
 function updateExecControls() {
   const action = document.getElementById('action-select').value;
   const siteProvision = action === 'provision' && currentTemplateType === 'site';
-  document.getElementById('row-force').style.display        = action === 'decommission' ? '' : 'none';
+  // Decommission confirmation is handled by a browser prompt at run time, so
+  // the old --force toggle row is no longer shown.
+  document.getElementById('row-force').style.display        = 'none';
   document.getElementById('row-create-zone').style.display   = siteProvision ? '' : 'none';
   document.getElementById('row-reverse-zone').style.display  = siteProvision ? '' : 'none';
   document.getElementById('row-if-not-exists').style.display = siteProvision ? '' : 'none';
@@ -680,10 +682,19 @@ function execute() {
 
   const action      = document.getElementById('action-select').value;
   const dryRun      = document.getElementById('dry-run-toggle').checked;
-  const force       = document.getElementById('force-toggle').checked;
   const createZone  = document.getElementById('exec-create-zone').checked;
   const reverseZone = document.getElementById('exec-reverse-zone').checked;
   const ifNotExists = document.getElementById('exec-if-not-exists').checked;
+
+  // Decommission is non-interactive on the server, so confirm a real (non
+  // dry-run) teardown here in the browser before kicking it off.
+  if (action === 'decommission' && !dryRun) {
+    if (!confirm('Permanently decommission "' + name + '"?\n\nThis deletes its hosts, '
+        + 'DNS zone, DHCP ranges and subnets, and resets the address block. '
+        + 'This cannot be undone.')) {
+      return;
+    }
+  }
 
   document.getElementById('btn-execute').style.display = 'none';
   document.getElementById('btn-stop').style.display = '';
@@ -707,7 +718,9 @@ function execute() {
     body.if_not_exists = ifNotExists;
   } else {
     body.dry_run = dryRun;
-    body.force = force;
+    // Confirmation already happened in the browser above; the server-side
+    // script must run non-interactively (it cannot prompt over SSE).
+    body.force = true;
   }
 
   fetch('/api/' + action, {

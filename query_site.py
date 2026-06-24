@@ -384,18 +384,27 @@ class SiteQuerier:
 
     def find_subnets(self, block: dict) -> list:
         '''
-        List all subnets carved from the given address block.
+        List all subnets belonging to this site.
+
+        Matched by Site tag within the IP space (not parent address-block id),
+        since subnets may nest under a child of the allocated block when the
+        pool uses nested blocks — a parent== filter would miss them.
 
         Args:
-            block: Address block resource dict
+            block: Address block resource dict (logging context only)
 
         Returns:
             List of subnet resource dicts
         '''
-        logger.info('Listing subnets in block %s', block['id'])
+        logger.info('Listing subnets for site %s in block %s', self.cfg.site, block['id'])
         subnets = self.client.get_all(
             '/ipam/subnet',
-            params={'_filter': f'parent=="{block["id"]}"'},
+            params={
+                '_filter': (
+                    f'space=="{self._space_id}" and '
+                    f'tags.Site=="{self.cfg.site}"'
+                ),
+            },
         )
         logger.info('Found %d subnet(s)', len(subnets))
         return subnets

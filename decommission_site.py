@@ -52,8 +52,8 @@
     # Skip confirmation (for pipelines / batch runs)
     decommission_site.py -t templates/site-london.yaml --force -v
 
-    # Reset block to available instead of decommissioned
-    decommission_site.py -t templates/site-london.yaml --final-status available -v
+    # Retire the block instead of returning it to the pool (default is available)
+    decommission_site.py -t templates/site-london.yaml --final-status decommissioned -v
 
     # Keep the DNS zone (hosts only removed from IPAM, not DNS)
     decommission_site.py -t templates/site-london.yaml --keep-zone -v
@@ -147,7 +147,7 @@ class DecommissionConfig:
     ip_space: str
     dns_parent: str
     dns_view: str
-    final_status: str = 'decommissioned'
+    final_status: str = 'available'
     keep_zone: bool = False
     dry_run: bool = False
     force: bool = False
@@ -315,22 +315,32 @@ class SiteDecommissioner:
 
     def find_subnets(self, block: dict) -> list[dict]:
         '''
-        List all subnets that belong to the given address block.
+        List all subnets belonging to this site.
 
-        Uses the parent address_block_id field to filter precisely,
-        so only subnets directly inside this block are returned.
+        Subnets are matched by their Site tag within the IP space rather than
+        by parent address-block id.  Provisioning stamps Site=<name> on every
+        subnet, and the subnets may nest under a *child* of the allocated
+        block (the API auto-parents to the most specific container), so a
+        parent== filter would miss them and leave them behind — breaking a
+        later re-provision.
 
         Args:
             block: Address block resource dict from find_allocated_block()
+                   (used only for logging context)
 
         Returns:
             List of subnet resource dicts (may be empty)
         '''
-        block_id = block['id']
-        logger.info('Listing subnets in block %s/%s', block['address'], block['cidr'])
+        logger.info('Listing subnets for site %s in block %s/%s',
+                    self.cfg.site, block['address'], block['cidr'])
         subnets = self.client.get_all(
             '/ipam/subnet',
-            params={'_filter': f'parent=="{block_id}"'},
+            params={
+                '_filter': (
+                    f'space=="{self._space_id}" and '
+                    f'tags.Site=="{self.cfg.site}"'
+                ),
+            },
         )
         logger.info('  Found %d subnet(s)', len(subnets))
         for s in subnets:
@@ -872,12 +882,13 @@ def parseargs() -> argparse.Namespace:
     )
     opt_grp.add_argument(
         '--final-status',
-        default='decommissioned',
+        default='available',
         choices=['decommissioned', 'available'],
         metavar='{decommissioned,available}',
         help=(
-            'Tag value to set on the block after teardown '
-            '(default: decommissioned)'
+            'Tag value to set on the block after teardown — "available" returns '
+            'it to the discovery pool for re-provisioning; "decommissioned" '
+            'retires it (default: available)'
         ),
     )
     opt_grp.add_argument(
@@ -1038,10 +1049,10 @@ def main() -> None:
     # --json no longer bypasses confirmation on its own: a non-interactive run
     # that makes destructive changes must opt in with --force.
     if not cfg.dry_run and not cfg.force:
-        if args.json_output:
+        if args.json_output or not sys.stdin.isatty():
             logger.error(
                 'Refusing to decommission non-interactively without --force. '
-                'Re-run with --force (and --json) or --dry-run.'
+                'Re-run with --force, or use --dry-run to preview.'
             )
             sys.exit(1)
         if not confirm_decommission(cfg):
