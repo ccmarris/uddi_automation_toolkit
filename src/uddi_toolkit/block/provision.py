@@ -27,10 +27,10 @@
 
  Examples:
     # Preview
-    provision_block.py -t templates/blocks/emea-prod-pool.yaml --dry-run -v
+    provision_block.py -t templates/blocks/regional_address_blocks.yaml --dry-run -v
 
     # Execute
-    provision_block.py -t templates/blocks/emea-prod-pool.yaml -v
+    provision_block.py -t templates/blocks/regional_address_blocks.yaml -v
 
  Requirements:
     Python 3.10+ with requests and PyYAML modules

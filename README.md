@@ -237,7 +237,7 @@ tags:                          # template-wide tags merged onto every block
   CostCentre: CC-EMEA-001
 ```
 
-Run: `uddi provision address-block -t templates/blocks/emea-prod-pool.yaml --dry-run -v`
+Run: `uddi provision address-block -t templates/blocks/regional_address_blocks.yaml --dry-run -v`
 
 ---
 
@@ -377,7 +377,7 @@ uddi provision site -s london -r EMEA -e production -v
 uddi provision site -t templates/site-london.yaml -c /etc/uddi/uddi.ini -v
 
 # Seed the address-block pool, then a DNS zone+records
-uddi provision address-block -t templates/blocks/emea-prod-pool.yaml -v
+uddi provision address-block -t templates/blocks/regional_address_blocks.yaml -v
 uddi provision dns -t templates/dns/corp.yaml -v
 ```
 
@@ -479,7 +479,7 @@ uddi query site -t templates/site-london.yaml -v
 uddi query site -t templates/site-london.yaml --json | python3 -m json.tool
 
 # Inspect a block pool or a DNS template's zones/records
-uddi query address-block -t templates/blocks/emea-prod-pool.yaml
+uddi query address-block -t templates/blocks/regional_address_blocks.yaml
 uddi query dns -t templates/dns/corp.yaml --json
 ```
 
@@ -537,7 +537,7 @@ uddi batch --action provision --templates-dir templates --dry-run -v
 
 # Provision specific templates
 uddi batch --action provision \
-    --templates templates/site-london.yaml templates/blocks/emea-prod-pool.yaml -v
+    --templates templates/site-london.yaml templates/blocks/regional_address_blocks.yaml -v
 
 # Decommission all, non-interactively, stop on first failure
 uddi batch --action decommission \
@@ -651,7 +651,7 @@ uddi_automation_toolkit/
 ├── uddi.ini                    # your config (not committed — see .gitignore)
 ├── templates/                  # your YAML templates (user data)
 │   ├── site-london.yaml
-│   ├── blocks/emea-prod-pool.yaml
+│   ├── blocks/regional_address_blocks.yaml
 │   └── dns/corp.yaml
 └── src/uddi_toolkit/
     ├── cli.py                  # unified `uddi` CLI (subcommand registry)
