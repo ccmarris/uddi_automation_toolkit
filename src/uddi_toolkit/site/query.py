@@ -145,18 +145,21 @@ class QueryResult:
     '''
     Holds the complete current state of a provisioned site.
 
+    A site is identified by its subnets (tagged Site=<name>), not by an
+    address block — the pool block is shared and is not tagged per site.
+
     Attributes:
-        block_id:      API resource ID of the address block
-        block_address: CIDR notation of the block (e.g. 10.20.0.0/16)
-        block_tags:    All tags currently on the block
+        site:          Site name
+        ip_space:      IP space name
+        found:         True if any subnet tagged Site=<name> exists
         subnets:       List of subnet dicts, each with a nested 'hosts' list
         dns_zone_found: Whether the site DNS zone was found
         dns_zone_fqdn: FQDN of the site zone (may be '' if not found)
         dns_zone_id:   API resource ID of the zone (may be '' if not found)
     '''
-    block_id: str = ''
-    block_address: str = ''
-    block_tags: dict = field(default_factory=dict)
+    site: str = ''
+    ip_space: str = ''
+    found: bool = False
     subnets: list = field(default_factory=list)
     dns_zone_found: bool = False
     dns_zone_fqdn: str = ''
@@ -266,11 +269,10 @@ class SiteQuerier:
     Steps
     -----
     1. resolve_ip_space()       - look up IP space ID from name
-    2. find_allocated_block()   - tag-based discovery of allocated block
-    3. resolve_dns_view()       - look up DNS view ID from name
-    4. find_subnets()           - list subnets carved from the block
-    5. find_hosts_in_subnet()   - list IPAM hosts per subnet
-    6. find_dns_zone()          - look up forward auth zone (not fatal if absent)
+    2. resolve_dns_view()       - look up DNS view ID from name
+    3. find_subnets()           - list the site's subnets (by Site tag)
+    4. find_hosts_in_subnet()   - list IPAM hosts per subnet
+    5. find_dns_zone()          - look up forward auth zone (not fatal if absent)
     '''
 
     def __init__(self, client: UDDIClient, cfg: QueryConfig) -> None:
@@ -309,49 +311,7 @@ class SiteQuerier:
         return space_id
 
     # ------------------------------------------------------------------
-    # Step 2: Find allocated block by Site tag
-    # ------------------------------------------------------------------
-
-    def find_allocated_block(self) -> dict:
-        '''
-        Search address blocks for one allocated to this site.
-
-        Filter: tags.Site == cfg.site AND tags.Status == "allocated"
-
-        Returns:
-            Address block resource dict
-
-        Raises:
-            SystemExit if no matching block is found
-        '''
-        logger.info('Searching for allocated block: Site=%s', self.cfg.site)
-        filter_expr = (
-            f'space=="{self._space_id}" and '
-            f'tags.Site=="{self.cfg.site}" and '
-            f'tags.Status=="allocated"'
-        )
-        data = self.client.get(
-            '/ipam/address_block',
-            params={'_filter': filter_expr},
-        )
-        results = data.get('results', [])
-        if not results:
-            logger.error(
-                'No allocated block found for site "%s" in space "%s". '
-                'Has this site been provisioned?',
-                self.cfg.site, self.cfg.ip_space,
-            )
-            sys.exit(1)
-
-        block = results[0]
-        logger.info(
-            'Found block: %s/%s  id=%s',
-            block['address'], block['cidr'], block['id'],
-        )
-        return block
-
-    # ------------------------------------------------------------------
-    # Step 3: Resolve DNS view
+    # Step 2: Resolve DNS view
     # ------------------------------------------------------------------
 
     def resolve_dns_view(self) -> str:
@@ -382,21 +342,16 @@ class SiteQuerier:
     # Step 4: Find subnets in block
     # ------------------------------------------------------------------
 
-    def find_subnets(self, block: dict) -> list:
+    def find_subnets(self) -> list:
         '''
-        List all subnets belonging to this site.
-
-        Matched by Site tag within the IP space (not parent address-block id),
-        since subnets may nest under a child of the allocated block when the
-        pool uses nested blocks — a parent== filter would miss them.
-
-        Args:
-            block: Address block resource dict (logging context only)
+        List all subnets belonging to this site, matched by Site tag within
+        the IP space.  This is how a site is identified — there is no per-site
+        address block to find (the pool block is shared and untagged).
 
         Returns:
             List of subnet resource dicts
         '''
-        logger.info('Listing subnets for site %s in block %s', self.cfg.site, block['id'])
+        logger.info('Listing subnets for site %s', self.cfg.site)
         subnets = self.client.get_all(
             '/ipam/subnet',
             params={
@@ -512,22 +467,17 @@ class SiteQuerier:
         Returns:
             QueryResult with the complete current state of the site
         '''
-        result = QueryResult()
+        result = QueryResult(site=self.cfg.site, ip_space=self.cfg.ip_space)
 
         # Step 1: Resolve IP space
         self.resolve_ip_space()
 
-        # Step 2: Find allocated block
-        block = self.find_allocated_block()
-        result.block_id = block.get('id', '')
-        result.block_address = f'{block["address"]}/{block["cidr"]}'
-        result.block_tags = block.get('tags', {})
-
-        # Step 3: Resolve DNS view
+        # Step 2: Resolve DNS view
         self.resolve_dns_view()
 
-        # Step 4 + 5: Find subnets and their hosts (fetch hosts once, reuse)
-        subnets_raw = self.find_subnets(block)
+        # Step 3 + 4: Find the site's subnets (by Site tag) and their hosts
+        subnets_raw = self.find_subnets()
+        result.found = bool(subnets_raw)
         all_hosts = self.find_all_hosts() if subnets_raw else []
         for subnet in subnets_raw:
             hosts_raw = self.find_hosts_in_subnet(subnet, all_hosts)
@@ -579,11 +529,8 @@ def print_result(result: QueryResult, site: str) -> None:
     print('=' * 60)
     print(f'Site Report: {site}')
     print('=' * 60)
-    print(f'  Block       : {result.block_address}  id={result.block_id}')
-
-    if result.block_tags:
-        tag_str = '  '.join(f'{k}={v}' for k, v in sorted(result.block_tags.items()))
-        print(f'  Block tags  : {tag_str}')
+    print(f'  IP space    : {result.ip_space}')
+    print(f'  Provisioned : {"yes" if result.found else "no"}')
 
     print()
     print(f'  Subnets ({len(result.subnets)}):')

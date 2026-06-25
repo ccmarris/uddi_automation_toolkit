@@ -860,22 +860,17 @@ function renderQueryResult(r) {
   const site = r.site || '(unknown)';
   let html = '';
 
-  // ── Site / block card ──
+  // ── Site card ──
   html += `<div class="qr-card">
-    <div class="qr-card-header"><span class="qr-title">Site: ${htmlEsc(site)}</span></div>
+    <div class="qr-card-header">
+      <span class="qr-title">Site: ${htmlEsc(site)}</span>
+      <span class="qr-badge ${r.found ? 'ok' : 'err'}">${r.found ? 'Provisioned' : 'Not provisioned'}</span>
+    </div>
     <div class="qr-card-body">
       <dl>
-        <div class="qr-kv"><dt>Block</dt><dd>${htmlEsc(r.block_address || '—')}</dd></div>
-      </dl>`;
-  const tags = r.block_tags || {};
-  if (Object.keys(tags).length) {
-    html += '<div class="qr-tags">';
-    for (const [k, v] of Object.entries(tags)) {
-      html += `<span class="qr-tag">${htmlEsc(k)}: ${htmlEsc(v)}</span>`;
-    }
-    html += '</div>';
-  }
-  html += '</div></div>';
+        <div class="qr-kv"><dt>IP space</dt><dd>${htmlEsc(r.ip_space || '—')}</dd></div>
+      </dl>
+    </div></div>`;
 
   // ── DNS zone card ──
   html += `<div class="qr-card">
@@ -1073,7 +1068,7 @@ function renderDriftResult(r) {
   const drifts  = r.drifts || [];
   const summary = r.summary || {};
   const site    = r.site || '(unknown)';
-  const block   = r.block_address || '';
+  const subnetCount = r.subnet_count;
 
   let html = '<div class="dr-badge-row">';
   if (!found) {
@@ -1085,7 +1080,7 @@ function renderDriftResult(r) {
     html += `<span class="dr-badge drifted">✗ Drift (${n})</span>`;
   }
   html += `<span class="dr-site-name">${htmlEsc(site)}</span>`;
-  if (block) html += `<span class="dr-block">${htmlEsc(block)}</span>`;
+  if (found && subnetCount != null) html += `<span class="dr-block">${subnetCount} subnet(s)</span>`;
   html += '</div>';
 
   if (!drifts.length) {

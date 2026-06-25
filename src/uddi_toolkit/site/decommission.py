@@ -13,18 +13,18 @@
 
     Decommission sequence:
 
-      1. Discover the allocated address block for the site (tags:
-         Site=<name>, Status=allocated)
+      1. Find the site's subnets by their Site=<name> tag (the pool
+         address block is shared and is never tagged for the site)
       2. Delete the forward DNS authoritative zone for the site
          (site-<name>.<dns_parent>)
       3. Delete DHCP ranges and reverse zones for the site subnets
-      4. Delete all subnets carved from the block — this releases the
-         host addresses (a DHCP-bound address cannot be deleted while the
-         host still holds it)
+      4. Delete all the site's subnets — this releases the host addresses
+         (a DHCP-bound address cannot be deleted while the host holds it)
       5. Delete the now-addressless IPAM host records (removes the IPAM
          record + auto-generated DNS A/PTR), matched by the site DNS zone
-      6. Reset the address block tags — Status → <final_status>,
-         Site → unassigned, clears Provisioned/Location
+
+    The shared pool address block is left untouched throughout, so other
+    sites in the same block are unaffected and the block stays available.
 
     All destructive steps support --dry-run so you can preview the
     full plan before committing any changes.
@@ -33,7 +33,6 @@
 
  Usage:
     decommission_site.py [-h] [-t FILE] [-s SITE]
-                         [--final-status {available,decommissioned}]
                          [--keep-zone] [--dns-parent ZONE]
                          [--dns-view VIEW] [--ip-space SPACE]
                          [--dry-run] [--force]
@@ -54,9 +53,6 @@
 
     # Skip confirmation (for pipelines / batch runs)
     decommission_site.py -t templates/site-london.yaml --force -v
-
-    # Retire the block instead of returning it to the pool (default is available)
-    decommission_site.py -t templates/site-london.yaml --final-status decommissioned -v
 
     # Keep the DNS zone (hosts only removed from IPAM, not DNS)
     decommission_site.py -t templates/site-london.yaml --keep-zone -v
@@ -113,8 +109,6 @@ __author_email__ = 'chris@infoblox.com'
 
 import argparse
 import dataclasses
-import datetime
-import ipaddress
 import json
 import logging
 import sys
@@ -141,7 +135,6 @@ class DecommissionConfig:
         ip_space:     IP space to search for the allocated block
         dns_parent:   Parent DNS zone (used to derive site zone FQDN)
         dns_view:     DNS view containing the site zone
-        final_status: Tag value to apply to the block after teardown
         keep_zone:    When True, leave the DNS zone intact
         dry_run:      When True, print plan but make no API changes
         force:        When True, skip interactive confirmation prompt
@@ -150,11 +143,9 @@ class DecommissionConfig:
     ip_space: str
     dns_parent: str
     dns_view: str
-    final_status: str = 'available'
     keep_zone: bool = False
     dry_run: bool = False
     force: bool = False
-    date: str = field(default_factory=lambda: datetime.date.today().isoformat())
 
     @property
     def dns_zone(self) -> str:
@@ -167,16 +158,14 @@ class DecommissionResult:
     '''
     Accumulates counts and IDs of resources removed during teardown.
     '''
-    block_id: str = ''
-    block_address: str = ''
+    site: str = ''
+    ip_space: str = ''
     hosts_deleted: list[dict] = field(default_factory=list)
     dhcp_ranges_deleted: list[dict] = field(default_factory=list)
     dns_zone_deleted: bool = False
     dns_zone_fqdn: str = ''
     reverse_zones_deleted: list[dict] = field(default_factory=list)
     subnets_deleted: list[dict] = field(default_factory=list)
-    block_updated: bool = False
-    final_status: str = ''
     dry_run: bool = False
 
 
@@ -196,15 +185,16 @@ class SiteDecommissioner:
     Steps
     -----
     1. resolve_ip_space()     - look up IP space ID from name
-    2. find_allocated_block() - tag-based discovery of the site's block
-    3. resolve_dns_view()     - look up DNS view ID from name
-    4. find_subnets()         - list the site's subnets (by Site tag)
-    5. delete_dns_zone()      - delete forward authoritative zone
-    6. delete_dhcp_ranges()   - delete DHCP ranges within each subnet
-    7. delete_reverse_zones() - delete reverse zones for the subnets
-    8. delete_subnets()       - remove all carved subnets (releases host IPs)
-    9. delete_hosts()         - remove the now-addressless IPAM host records
-    10. reset_block_status()  - set block Status=<final_status>, Site=unassigned
+    2. resolve_dns_view()     - look up DNS view ID from name
+    3. find_subnets()         - list the site's subnets (by Site tag)
+    4. delete_dns_zone()      - delete forward authoritative zone
+    5. delete_dhcp_ranges()   - delete DHCP ranges within each subnet
+    6. delete_reverse_zones() - delete reverse zones for the subnets
+    7. delete_subnets()       - remove all carved subnets (releases host IPs)
+    8. delete_hosts()         - remove the now-addressless IPAM host records
+
+    The pool address block is shared and is never tagged for the site, so it
+    is neither discovered nor reset here.
     '''
 
     def __init__(self, client: UDDIClient, cfg: DecommissionConfig) -> None:
@@ -242,53 +232,7 @@ class SiteDecommissioner:
         return self._space_id
 
     # ------------------------------------------------------------------
-    # Step 2: Find the allocated block for this site
-    # ------------------------------------------------------------------
-
-    def find_allocated_block(self) -> dict:
-        '''
-        Search address blocks in the configured IP space for one whose
-        tags match:
-            Site   == cfg.site
-            Status == "allocated"
-
-        Returns:
-            Address block resource dict (id, address, cidr, tags, ...)
-
-        Raises:
-            SystemExit if no matching block is found
-        '''
-        logger.info(
-            'Searching for allocated block: Site=%s Status=allocated',
-            self.cfg.site,
-        )
-        filter_expr = (
-            f'space=="{self._space_id}" and '
-            f'tags.Site=="{self.cfg.site}" and '
-            f'tags.Status=="allocated"'
-        )
-        data = self.client.get(
-            '/ipam/address_block',
-            params={'_filter': filter_expr},
-        )
-        results = data.get('results', [])
-        if not results:
-            logger.error(
-                'No allocated address block found for site "%s".  '
-                'Verify the Site and Status tags on the block.',
-                self.cfg.site,
-            )
-            sys.exit(1)
-
-        block = results[0]
-        logger.info(
-            'Found block: %s/%s  id=%s',
-            block['address'], block['cidr'], block['id'],
-        )
-        return block
-
-    # ------------------------------------------------------------------
-    # Step 3: Resolve DNS view
+    # Step 2: Resolve DNS view
     # ------------------------------------------------------------------
 
     def resolve_dns_view(self) -> str:
@@ -318,26 +262,20 @@ class SiteDecommissioner:
     # Step 4: Find subnets inside the block
     # ------------------------------------------------------------------
 
-    def find_subnets(self, block: dict) -> list[dict]:
+    def find_subnets(self) -> list[dict]:
         '''
         List all subnets belonging to this site.
 
-        Subnets are matched by their Site tag within the IP space rather than
-        by parent address-block id.  Provisioning stamps Site=<name> on every
-        subnet, and the subnets may nest under a *child* of the allocated
-        block (the API auto-parents to the most specific container), so a
-        parent== filter would miss them and leave them behind — breaking a
-        later re-provision.
-
-        Args:
-            block: Address block resource dict from find_allocated_block()
-                   (used only for logging context)
+        Subnets are matched by their Site tag within the IP space.  This is
+        how a site is identified — the pool address block is shared and is
+        never tagged for the site, so there is no per-site block to find.
+        (Provisioning stamps Site=<name> on every subnet, which may nest
+        under a child of the pool block.)
 
         Returns:
             List of subnet resource dicts (may be empty)
         '''
-        logger.info('Listing subnets for site %s in block %s/%s',
-                    self.cfg.site, block['address'], block['cidr'])
+        logger.info('Listing subnets for site %s', self.cfg.site)
         subnets = self.client.get_all(
             '/ipam/subnet',
             params={
@@ -576,54 +514,6 @@ class SiteDecommissioner:
         return removed
 
     # ------------------------------------------------------------------
-    # Step 8: Reset address block
-    # ------------------------------------------------------------------
-
-    def reset_block_status(self, block: dict) -> dict:
-        '''
-        Reset the address block tags to reflect that it is no longer
-        in use:
-            Status      → cfg.final_status  ('decommissioned' or 'available')
-            Site        → 'unassigned'
-            Location    → cleared
-            Provisioned → cleared
-            Decommissioned → today's ISO date
-
-        Args:
-            block: Original address block resource dict
-
-        Returns:
-            Updated address block resource dict (or dry-run plan dict)
-        '''
-        existing_tags = dict(block.get('tags', {}))
-
-        # Remove site-specific tags; set lifecycle state
-        updated_tags = {
-            **existing_tags,
-            'Status':         self.cfg.final_status,
-            'Site':           'unassigned',
-            'Location':       '',
-            'Provisioned':    '',
-            'Decommissioned': self.cfg.date,
-        }
-
-        logger.info(
-            '%sResetting block %s/%s: Status=%s, Site=unassigned',
-            '[DRY-RUN] ' if self.cfg.dry_run else '',
-            block['address'], block['cidr'], self.cfg.final_status,
-        )
-        if self.cfg.dry_run:
-            block_result = {'dry_run': True, 'tags': updated_tags}
-        else:
-            result = self.client.patch(
-                f'/{block["id"]}',
-                body={'tags': updated_tags},
-            )
-            block_result = result.get('result', {})
-
-        return block_result
-
-    # ------------------------------------------------------------------
     # Orchestration
     # ------------------------------------------------------------------
 
@@ -636,47 +526,44 @@ class SiteDecommissioner:
             DecommissionResult with details of all removed resources
         '''
         result = DecommissionResult(
+            site=self.cfg.site,
+            ip_space=self.cfg.ip_space,
             dry_run=self.cfg.dry_run,
-            final_status=self.cfg.final_status,
         )
 
         # Step 1: Resolve IP space
         self.resolve_ip_space()
 
-        # Step 2: Find allocated block for this site
-        block = self.find_allocated_block()
-        result.block_id = block.get('id', '')
-        result.block_address = f'{block["address"]}/{block["cidr"]}'
-
-        # Step 3: Resolve DNS view
+        # Step 2: Resolve DNS view
         self.resolve_dns_view()
 
-        # Step 4: Enumerate subnets
-        subnets = self.find_subnets(block)
+        # Step 3: Enumerate the site's subnets (by Site tag). The pool block
+        # is shared and never tagged for the site, so there is no block to
+        # find or reset.
+        subnets = self.find_subnets()
+        if not subnets:
+            logger.warning('No subnets tagged Site=%s found; will still remove any zone/records',
+                           self.cfg.site)
 
-        # Step 5: Delete DNS zone
+        # Step 4: Delete DNS zone
         result.dns_zone_fqdn = self.cfg.dns_zone
         result.dns_zone_deleted = self.delete_dns_zone()
 
-        # Step 6: Delete DHCP ranges in each subnet
+        # Step 5: Delete DHCP ranges in each subnet
         for subnet in subnets:
             result.dhcp_ranges_deleted.extend(self.delete_dhcp_ranges(subnet))
 
-        # Step 7: Delete reverse DNS zones for subnets (silently skips absent zones)
+        # Step 6: Delete reverse DNS zones for subnets (silently skips absent zones)
         result.reverse_zones_deleted = self.delete_reverse_zones(subnets)
 
-        # Step 8: Delete subnets — this releases the host addresses so the
+        # Step 7: Delete subnets — this releases the host addresses so the
         # host records (whose DHCP-bound addresses are otherwise "in use")
         # can then be removed.
         result.subnets_deleted = self.delete_subnets(subnets)
 
-        # Step 9: Delete the now-addressless IPAM host records (and their
+        # Step 8: Delete the now-addressless IPAM host records (and their
         # auto-generated DNS A/PTR), matched by the site DNS zone.
         result.hosts_deleted = self.delete_hosts()
-
-        # Step 10: Reset block status
-        self.reset_block_status(block)
-        result.block_updated = True
 
         return result
 
@@ -738,7 +625,6 @@ def confirm_decommission(cfg: DecommissionConfig) -> bool:
     print(f'  IP space  : {cfg.ip_space}')
     print(f'  DNS zone  : {cfg.dns_zone}')
     print(f'  DNS view  : {cfg.dns_view}')
-    print(f'  Final status: {cfg.final_status}')
     if cfg.keep_zone:
         print('  DNS zone  : WILL BE KEPT (--keep-zone)')
     else:
@@ -749,7 +635,7 @@ def confirm_decommission(cfg: DecommissionConfig) -> bool:
     if not cfg.keep_zone:
         print('    • The site DNS authoritative zone and all its records')
     print('    • All site subnets')
-    print('    • Block tags will be reset (Status, Site, Location, Provisioned)')
+    print('  The shared pool address block is left unchanged.')
     print()
 
     answer = input('  Type the site name to confirm, or press Enter to abort: ').strip()
@@ -772,7 +658,8 @@ def print_result(result: DecommissionResult) -> None:
     print('=' * 60)
     print(f'{mode}Site Decommission Summary')
     print('=' * 60)
-    print(f'  Address block : {result.block_address}  (id={result.block_id})')
+    print(f'  Site     : {result.site}')
+    print(f'  IP space : {result.ip_space}')
     print()
 
     if result.hosts_deleted:
@@ -797,8 +684,7 @@ def print_result(result: DecommissionResult) -> None:
         print('  Subnets removed : none found')
     print()
 
-    if result.block_updated:
-        print(f'  Block reset to   : Status={result.final_status}, Site=unassigned')
+    print('  Pool block    : left unchanged (shared by other sites)')
     print('=' * 60)
 
     if result.dry_run:
@@ -855,17 +741,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         metavar='VIEW',
         help='DNS view name (overrides INI default)',
-    )
-    opt_grp.add_argument(
-        '--final-status',
-        default='available',
-        choices=['decommissioned', 'available'],
-        metavar='{decommissioned,available}',
-        help=(
-            'Tag value to set on the block after teardown — "available" returns '
-            'it to the discovery pool for re-provisioning; "decommissioned" '
-            'retires it (default: available)'
-        ),
     )
     opt_grp.add_argument(
         '--keep-zone',
@@ -976,7 +851,6 @@ def run(args: argparse.Namespace) -> int:
         ip_space=ip_space,
         dns_parent=dns_parent,
         dns_view=dns_view,
-        final_status=args.final_status,
         keep_zone=args.keep_zone,
         dry_run=args.dry_run,
         force=args.force,

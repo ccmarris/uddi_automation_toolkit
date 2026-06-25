@@ -832,18 +832,18 @@ def detect_drift(template: dict, live: dict, site_name: str = '') -> dict:
 
     Args:
         template:  Parsed YAML template dict
-        live:      QueryResult as a plain dict (from query_site.py --json);
-                   pass {} or a dict with no block_address when site is absent
+        live:      QueryResult as a plain dict (from `uddi query site --json`);
+                   pass {} or a dict with no subnets when the site is absent
         site_name: Site identifier echoed back into the result
 
     Returns:
         Dict with:
-            site          -- site name
-            found         -- True if a live block was found
-            drifted       -- True if any differences were detected
-            block_address -- live block CIDR, or '' if not found
-            drifts        -- list of {category, severity, field, message}
-            summary       -- {total, errors, warnings}
+            site         -- site name
+            found        -- True if the site's subnets were found
+            drifted      -- True if any differences were detected
+            subnet_count -- number of live subnets for the site
+            drifts       -- list of {category, severity, field, message}
+            summary      -- {total, errors, warnings}
     '''
     drifts: list[dict] = []
 
@@ -859,15 +859,16 @@ def detect_drift(template: dict, live: dict, site_name: str = '') -> dict:
     # Resolve site name from live data when not supplied
     resolved_site = site_name or live.get('site', '')
 
-    # ── 1. Site existence ──────────────────────────────────────────────────
-    if not live.get('block_address'):
-        _drift('site', 'error', 'block',
-               'Site is not provisioned — no allocated block found')
+    # ── 1. Site existence (a site exists when it has subnets) ───────────────
+    live_subnets = live.get('subnets') or []
+    if not (live_subnets or live.get('found')):
+        _drift('site', 'error', 'site',
+               'Site is not provisioned — no subnets found')
         result = {
             'site': resolved_site,
             'found': False,
             'drifted': True,
-            'block_address': '',
+            'subnet_count': 0,
             'drifts': drifts,
             'summary': {'total': 1, 'errors': 1, 'warnings': 0},
         }
@@ -876,9 +877,9 @@ def detect_drift(template: dict, live: dict, site_name: str = '') -> dict:
         dns = template.get('dns') or {}
         tags_tmpl = template.get('tags') or {}
 
-        live_subnets = live.get('subnets') or []
-        live_tags = live.get('block_tags') or {}
-        block_addr = live.get('block_address', '')
+        # Template tags are applied to the site's subnets (the pool block is
+        # shared and untagged), so compare against a subnet's tags.
+        live_tags = (live_subnets[0].get('tags') or {}) if live_subnets else {}
 
         # ── 2. Subnets ─────────────────────────────────────────────────────────
         expected_subnet_names = {
@@ -917,7 +918,7 @@ def detect_drift(template: dict, live: dict, site_name: str = '') -> dict:
             live_val = live_tags.get(key)
             if live_val is None:
                 _drift('tags', 'warning', f'tags.{key}',
-                       f'Tag {key!r} missing from block (expected {str(expected_val)!r})')
+                       f'Tag {key!r} missing from subnet tags (expected {str(expected_val)!r})')
             elif str(live_val) != str(expected_val):
                 _drift('tags', 'warning', f'tags.{key}',
                        f'Tag {key!r}: expected {str(expected_val)!r}, live value is {str(live_val)!r}')
@@ -951,7 +952,7 @@ def detect_drift(template: dict, live: dict, site_name: str = '') -> dict:
             'site': resolved_site,
             'found': True,
             'drifted': len(drifts) > 0,
-            'block_address': block_addr,
+            'subnet_count': len(live_subnets),
             'drifts': drifts,
             'summary': {
                 'total': len(drifts),
