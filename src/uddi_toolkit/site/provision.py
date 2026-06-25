@@ -516,12 +516,14 @@ class SiteProvisioner:
     Steps
     -----
     1. resolve_ip_space()     - look up IP space ID from name
-    2. find_available_block() - tag-based discovery of address block
+    2. find_available_block() - tag-based discovery of a pool block (left as-is)
     3. resolve_dns_view()     - look up DNS view ID from name
-    4. create_subnets()       - carve subnets per plan (standard or YAML)
-    5. update_block_status()  - mark block as allocated
-    6. create_dns_zone()      - create forward authoritative zone
-    7. provision_hosts()      - IPAM host + DNS A/PTR for each host in plan
+    4. create_subnets()       - carve subnets into the block's next free space
+    5. create_dns_zone()      - create forward authoritative zone
+    6. provision_hosts()      - IPAM host + DNS A/PTR for each host in plan
+
+    The pool address block's tags are never modified, so multiple sites can
+    be provisioned from the same block.
     '''
 
     def __init__(self, client: UDDIClient, cfg: SiteConfig, ini_defaults: Optional[dict] = None) -> None:
@@ -569,34 +571,34 @@ class SiteProvisioner:
     # Step 2: Find available address block by tags
     # ------------------------------------------------------------------
 
-    def find_existing_site(self) -> dict:
+    def find_existing_site(self) -> list:
         '''
-        Check whether this site has already been provisioned by looking
-        for a block in the IP space tagged Site==cfg.site and
-        Status==allocated.
+        Check whether this site is already provisioned by looking for subnets
+        tagged Site==cfg.site in the IP space.
+
+        Site identity lives on the subnets, not on the pool address block
+        (which stays available so multiple sites can share it), so existence
+        is determined by the presence of the site's subnets.
 
         Returns:
-            Existing block resource dict if found, or {} if not found.
+            List of existing subnet resource dicts (empty if none found).
         '''
-        filter_expr = (
-            f'space=="{self._space_id}" and '
-            f'tags.Site=="{self.cfg.site}" and '
-            f'tags.Status=="allocated"'
-        )
         data = self.client.get(
-            '/ipam/address_block',
-            params={'_filter': filter_expr},
+            '/ipam/subnet',
+            params={
+                '_filter': (
+                    f'space=="{self._space_id}" and '
+                    f'tags.Site=="{self.cfg.site}"'
+                ),
+            },
         )
-        results = data.get('results', [])
-        found: dict = {}
-        if results:
-            block = results[0]
+        subnets = data.get('results', [])
+        if subnets:
             logger.info(
-                'Existing allocated block found for site %r: %s/%s  id=%s',
-                self.cfg.site, block['address'], block['cidr'], block['id'],
+                'Site %r already has %d subnet(s) provisioned',
+                self.cfg.site, len(subnets),
             )
-            found = block
-        return found
+        return subnets
 
     def find_available_block(self) -> dict:
         '''
@@ -681,11 +683,39 @@ class SiteProvisioner:
     # Step 4: Carve subnets
     # ------------------------------------------------------------------
 
+    def _next_subnet_address(self, block_id: str, cidr: int, name: str) -> str:
+        '''
+        Return the next free subnet base address of the given size in a block.
+
+        Uses the Universal DDI block 'next available subnet' endpoint (a
+        read-only lookup that does not create anything), so placement skips
+        subnets already carved by other sites in the same pool block.
+
+        Args:
+            block_id: Address-block resource ID
+            cidr:     Desired subnet prefix length
+            name:     Subnet name (for error context)
+
+        Returns:
+            Free subnet base address string
+
+        Raises:
+            SystemExit if the block has no free subnet of that size
+        '''
+        data = self.client.get(
+            f'/{block_id}/nextavailablesubnet',
+            params={'cidr': int(cidr), 'count': 1},
+        )
+        results = data.get('results', [])
+        if not results:
+            logger.error('No free /%s subnet available in block for %s', cidr, name)
+            sys.exit(1)
+        return results[0].get('address', '')
+
     def create_subnets(self, block: dict, result: 'ProvisionResult') -> dict[str, dict]:
         '''
-        Carve one subnet per entry in cfg.subnet_plan from the given
-        address block, assigning addresses sequentially from the start
-        of the block.
+        Carve one subnet per entry in cfg.subnet_plan from the given address
+        block, placing each in the next free space the API reports.
 
         Each subnet uses its own cidr if specified in the plan, otherwise
         falls back to cfg.subnet_size.
@@ -703,39 +733,16 @@ class SiteProvisioner:
             Dict mapping subnet name → subnet resource dict (or dry-run
             plan dict), allowing hosts to look up subnets by name.
         '''
-        try:
-            block_net = ipaddress.ip_network(
-                f'{block["address"]}/{block["cidr"]}', strict=False,
-            )
-        except (KeyError, ValueError) as exc:
-            logger.error('Invalid address block %s: %s', block.get('address'), exc)
-            sys.exit(1)
-        # Running cursor (as a 32-bit int) marking the next free address in the
-        # block.  Each subnet is aligned up to its own prefix boundary, carved,
-        # then the cursor advances past it — so mixed subnet sizes and blocks
-        # that do not start on a /16 boundary are both handled correctly.
-        cursor = int(block_net.network_address)
         created: dict[str, dict] = {}
+        block_id = block['id']
 
         for sdef in self.cfg.subnet_plan:
             cidr = sdef.cidr if sdef.cidr is not None else self.cfg.subnet_size
-            size = 1 << (block_net.max_prefixlen - cidr)
-            # Align the cursor up to the subnet's prefix boundary
-            if cursor % size:
-                cursor += size - (cursor % size)
-            try:
-                subnet_net = ipaddress.ip_network((cursor, cidr))
-            except ValueError as exc:
-                logger.error('Cannot carve /%s subnet %s: %s', cidr, sdef.name, exc)
-                sys.exit(1)
-            if subnet_net.broadcast_address > block_net.broadcast_address:
-                logger.error(
-                    'Subnet plan does not fit in block %s: %s/%s would exceed %s',
-                    block_net, subnet_net.network_address, cidr, block_net.broadcast_address,
-                )
-                sys.exit(1)
-            subnet_addr = str(subnet_net.network_address)
-            cursor = int(subnet_net.broadcast_address) + 1
+            # Ask the API for the next free subnet of this size within the block.
+            # Because each created subnet is skipped by the next lookup, multiple
+            # sites can be carved from the same pool block without colliding —
+            # the block itself is never marked allocated.
+            subnet_addr = self._next_subnet_address(block_id, cidr, sdef.name)
             tags = {
                 'Site':        self.cfg.site,
                 'Region':      self.cfg.region,
@@ -886,46 +893,7 @@ class SiteProvisioner:
         return dhcp_range
 
     # ------------------------------------------------------------------
-    # Step 5: Update block status
-    # ------------------------------------------------------------------
-
-    def update_block_status(self, block: dict) -> dict:
-        '''
-        Update the address block tags to mark it as allocated and
-        record the site name and provision date.
-
-        Args:
-            block: Original address block resource dict
-
-        Returns:
-            Updated address block resource dict (or dry-run plan dict)
-        '''
-        existing_tags = block.get('tags', {})
-        updated_tags = {
-            **existing_tags,
-            **self.cfg.extra_tags,
-            'Status':    'allocated',
-            'Site':       self.cfg.site,
-            'Location':   self.cfg.location,
-            'Provisioned': self.cfg.date,
-        }
-        logger.info(
-            '%sUpdating block %s/%s: Status=allocated, Site=%s',
-            '[DRY-RUN] ' if self.cfg.dry_run else '',
-            block['address'], block['cidr'], self.cfg.site,
-        )
-        if self.cfg.dry_run:
-            updated_block = {'dry_run': True, 'tags': updated_tags}
-        else:
-            result = self.client.patch(
-                f'/{block["id"]}',
-                body={'tags': updated_tags},
-            )
-            updated_block = result.get('result', {})
-        return updated_block
-
-    # ------------------------------------------------------------------
-    # Step 6: Create DNS zone
+    # Step 5: Create DNS zone
     # ------------------------------------------------------------------
 
     def create_dns_zone(self) -> dict:
@@ -1253,24 +1221,8 @@ class SiteProvisioner:
                 logger.error('  Rollback: failed to delete subnet id=%s', subnet_id)
                 errors += 1
 
-        # 6. Reset block tags to available
-        block = self._original_block
-        if block.get('id'):
-            try:
-                existing_tags = block.get('tags', {})
-                reset_tags = {
-                    **existing_tags,
-                    'Status':      'available',
-                    'Site':        'unassigned',
-                    'Location':    '',
-                    'Provisioned': '',
-                }
-                logger.warning('  Rollback: resetting block %s/%s tags to available',
-                               block.get('address', ''), block.get('cidr', ''))
-                self.client.patch(f'/{block["id"]}', body={'tags': reset_tags})
-            except UDDIError:
-                logger.error('  Rollback: failed to reset block tags id=%s', block['id'])
-                errors += 1
+        # The pool block's tags were never changed (it is shared), so there is
+        # nothing to reset here.
 
         if errors:
             logger.error('Rollback finished with %d error(s) — manual cleanup may be required', errors)
@@ -1299,21 +1251,21 @@ class SiteProvisioner:
             # Idempotency: check whether this site is already provisioned
             existing = self.find_existing_site()
             if existing:
+                first = existing[0]
                 msg = (
                     f'Site {self.cfg.site!r} is already provisioned '
-                    f'(block {existing["address"]}/{existing["cidr"]}  id={existing["id"]})'
+                    f'({len(existing)} subnet(s), e.g. {first.get("address")}/{first.get("cidr")})'
                 )
                 if self.cfg.if_not_exists:
                     logger.info('%s — skipping (--if-not-exists)', msg)
                     result.skipped = True
                     result.skip_reason = 'already provisioned'
-                    result.block_id = existing.get('id', '')
-                    result.block_address = f'{existing["address"]}/{existing["cidr"]}'
                 else:
                     logger.error('%s — use --if-not-exists to skip', msg)
                     sys.exit(1)
             else:
-                # Step 2: Find available block by tags
+                # Step 2: Find an available pool block by tags (left untouched —
+                # the block is shared, so its tags are NOT changed here)
                 block = self.find_available_block()
                 result.block_id = block.get('id', '')
                 result.block_address = f'{block["address"]}/{block["cidr"]}'
@@ -1324,15 +1276,12 @@ class SiteProvisioner:
                 # Step 4: Carve subnets (result updated incrementally inside)
                 subnets = self.create_subnets(block, result)
 
-                # Step 5: Update block status
-                self.update_block_status(block)
-
-                # Step 6: Create DNS zone
+                # Step 5: Create DNS zone
                 zone = self.create_dns_zone()
                 result.dns_zone_id = zone.get('id', '(dry-run)')
                 result.dns_zone_fqdn = zone.get('fqdn', self.cfg.dns_zone)
 
-                # Step 7: Provision hosts
+                # Step 6: Provision hosts
                 hosts = self.provision_hosts(subnets)
                 result.hosts = [
                     {

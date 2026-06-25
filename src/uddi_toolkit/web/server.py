@@ -556,7 +556,6 @@ def decommission():
         verbose       (bool) — default True
         force         (bool) — skip confirmation prompt
         keep_zone     (bool) — preserve DNS zone
-        final_status  (str)  — 'decommissioned' or 'available'
     '''
     data = request.get_json(silent=True) or {}
     template_name = data.get('template', '')
@@ -587,8 +586,6 @@ def decommission():
             if ttype == 'site':
                 if data.get('keep_zone'):
                     cmd.append('--keep-zone')
-                if data.get('final_status') in ('decommissioned', 'available'):
-                    cmd.extend(['--final-status', data['final_status']])
 
             response = _stream_script(cmd)
 

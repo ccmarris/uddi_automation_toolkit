@@ -145,7 +145,7 @@ def print_report(result: dict) -> None:
     site = result.get('site', '(unknown)')
     found = result.get('found', False)
     drifted = result.get('drifted', False)
-    block = result.get('block_address', '')
+    subnet_count = result.get('subnet_count', 0)
     drifts = result.get('drifts', [])
     summary = result.get('summary', {})
 
@@ -154,10 +154,10 @@ def print_report(result: dict) -> None:
     print('─' * len(header))
 
     if not found:
-        print('  ✗ Site not provisioned — no allocated block found')
+        print('  ✗ Site not provisioned — no subnets found')
         print()
     else:
-        print(f'  Block:  {block}')
+        print(f'  Subnets: {subnet_count}')
         status = '✓ No drift detected' if not drifted else f'✗ Drift detected ({summary.get("total", 0)} item(s))'
         print(f'  Status: {status}')
         print()
