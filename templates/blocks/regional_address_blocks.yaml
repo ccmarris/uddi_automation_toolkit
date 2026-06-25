@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# Address-block template (standard)
+#
+# Creates IPAM address blocks (and optional nested children) that seed the
+# pool provision_site.py later discovers by Region / Environment /
+# Status=available tags.  Run with provision_block.py / decommission_block.py
+# / query_block.py (or the web UI with the BLOCK template type).
+# ---------------------------------------------------------------------------
+type: address-block
+
+# Logical name — stamped as tag Template=<name> on every block so the blocks
+# can be found again at decommission/query time.
+name: REGION-ENV-pool
+
+# Optional — overrides INI [DEFAULTS].ip_space
+# ip_space: my-ip-space
+
+address_blocks:
+  - address: 10.0.0.0
+    cidr: 8
+    region: Global              # -> tag Region   (site discovery filters on this)
+    status: available         # -> tag Status   (default: available)
+    location: ""              # optional -> tag Location
+    comment: "Global supernet"
+    tags:
+      Owner: network-team
+    children:                 # optional nested child blocks (recursive)
+      - address: 10.0.0.0
+        cidr: 16
+        region: AMER
+        environment: production
+        status: available
+        comment: "Production sites"
+      - address: 10.10.0.0
+        cidr: 16
+        region: AMER
+        environment: development
+        status: available
+        comment: "Development sites"
+      - address: 10.20.0.0
+        cidr: 16
+        region: EMEA
+        environment: production
+        status: available
+        comment: "Production sites"
+      - address: 10.30.0.0
+        cidr: 16
+        region: EMEA
+        environment: development
+        status: available
+        comment: "Development sites"
+      - address: 10.40.0.0
+        cidr: 16
+        region: APAC
+        environment: production
+        status: available
+        comment: "Production sites"
+      - address: 10.50.0.0
+        cidr: 16
+        region: APAC
+        environment: development
+        status: available
+        comment: "Development sites"
+
+# Template-wide tags merged onto every block above
+tags:
+  Owner: network-team
